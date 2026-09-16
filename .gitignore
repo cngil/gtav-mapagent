@@ -9,3 +9,6 @@ editor/dist/
 *.user
 
 *.log
+
+# Saved maps and exported FiveM resources (generated content)
+maps/
