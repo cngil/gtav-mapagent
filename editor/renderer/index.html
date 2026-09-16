@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'" />
+    <title>GTA Map Editor</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="left">
+      <!-- Camera controls sit above the viewport: nothing can be drawn over it, CodeWalker's window covers it. -->
+      <div id="view-toolbar">
+        <div class="segmented" role="group" aria-label="Görünüm">
+          <button id="mode-3d" class="active" title="Serbest 3D kamera">3D</button>
+          <button id="mode-2d" title="Üstten harita görünümü">2D</button>
+        </div>
+        <span class="toolbar-sep"></span>
+        <button data-preset="eye_level" class="only-3d" title="Kamerayı bulunduğun yerde göz hizasına indir">Göz hizası</button>
+        <button data-preset="bird" title="Baktığın yere 45° yukarıdan bak">Kuş bakışı</button>
+        <button data-preset="north" class="only-3d" title="Yönü kuzeye çevir">Kuzey</button>
+        <button data-rotate="90" class="only-3d" title="Baktığın noktanın etrafında 90° sola dön">⟲</button>
+        <button data-rotate="-90" class="only-3d" title="Baktığın noktanın etrafında 90° sağa dön">⟳</button>
+        <button data-zoom="0.6" class="only-2d" title="Yakınlaş" hidden>+</button>
+        <button data-zoom="1.6" class="only-2d" title="Uzaklaş" hidden>−</button>
+        <span class="toolbar-sep"></span>
+        <button id="focus-all" title="Haritadaki en kalabalık obje grubuna odaklan; tekrar basınca sıradaki gruba geçer">Objelere odaklan</button>
+        <span id="camera-heading" class="toolbar-info"></span>
+      </div>
+      <!-- CodeWalker's window is placed exactly over this element; what is inside shows only until it arrives. -->
+      <section id="viewport">
+        <div id="viewport-message">CodeWalker başlatılıyor…</div>
+      </section>
+    </div>
+
+    <aside id="sidebar">
+      <header>
+        <div class="header-row">
+          <div class="status">
+            <span id="viewer-dot" class="dot"></span>
+            <span id="viewer-label">Başlatılıyor…</span>
+          </div>
+          <select id="model-select" class="model-select" title="Model" disabled>
+            <option>Modeller yükleniyor…</option>
+          </select>
+        </div>
+        <div class="header-row">
+          <div class="map-title">
+            <span id="map-name">Yeni harita</span>
+            <span id="unsaved" class="unsaved" hidden title="Kaydedilmemiş değişiklikler var">●</span>
+          </div>
+          <div class="actions">
+            <button id="new-map" title="Boş bir haritaya başla">Yeni</button>
+            <button id="open-map" title="Kaydedilmiş bir .ymap aç">Aç</button>
+            <button id="undo" title="Geri al (Ctrl+Z)" disabled>↶</button>
+            <button id="redo" title="İleri al (Ctrl+Y)" disabled>↷</button>
+            <button id="export" title="Kaydet ve FiveM resource klasörü oluştur">FiveM'e aktar</button>
+          </div>
+        </div>
+      </header>
+
+      <!-- novalidate: Electron doesn't reliably show the browser's validation bubble, so errors are shown in #export-status. -->
+      <form id="export-form" hidden novalidate>
+        <label for="export-name">Resource adı</label>
+        <input id="export-name" spellcheck="false" placeholder="kamp_alani" />
+        <button type="submit" id="export-submit">Aktar</button>
+        <button type="button" id="export-cancel">Kapat</button>
+        <div class="form-hint">Küçük harf, rakam, _ ve -. Aynı ad seçilirse üzerine yazılır.</div>
+        <div id="export-status" class="form-status" hidden></div>
+      </form>
+
+      <details id="props" open>
+        <summary>
+          Sahnedeki objeler <span id="prop-count" class="count">0</span>
+          <button id="new-folder" class="summary-button" title="Yeni klasör">+ Klasör</button>
+        </summary>
+        <ul id="prop-list"></ul>
+      </details>
+
+      <main id="log">
+        <div class="hint">
+          3D görünüme tıklayıp WASD ve fareyle kamerayı kurmak istediğin yere götür, sonra ne istediğini yaz.<br />
+          Örnek: <em>"Önüme bir kamp alanı kur: ortada ateş, etrafında 3 bank, arkada 2 çadır."</em>
+        </div>
+      </main>
+
+      <form id="composer">
+        <textarea id="input" rows="3" placeholder="Ne kurmak istiyorsun?"></textarea>
+        <div id="usage" class="usage" hidden></div>
+        <div class="composer-actions">
+          <button type="button" id="reset" title="Konuşma bağlamını sıfırlar, sahnedeki objeler kalır">Yeni sohbet</button>
+          <span class="spacer"></span>
+          <button type="button" id="stop" disabled>Durdur</button>
+          <button type="submit" id="send">Gönder</button>
+        </div>
+      </form>
+    </aside>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+# Electron editor
+editor/node_modules/
+editor/dist/
+
+# .NET build output (CodeWalker's own .gitignore doesn't cover these)
+[Bb]in/
+[Oo]bj/
+.vs/
+*.user
+
+*.log
