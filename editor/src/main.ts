@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { EditorSession } from "./agent.js";
+import { beginUserRequest, EditorSession } from "./agent.js";
 import { codewalker, CodeWalkerError, setHistoryGroup } from "./codewalker.js";
 import { exportFivemResource } from "./export.js";
 import { layout } from "./layout.js";
@@ -248,9 +248,21 @@ ipcMain.handle("shell:show-folder", (_event, folder: string) => {
 function toolResultText(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
-    return content.map((c) => (c && typeof c === "object" && "text" in c ? String(c.text) : "")).join("");
+    return content.map((c) => (c && typeof c === "object" && "text" in c ? String(c.text) : "")).join("\n");
   }
   return "";
+}
+
+// Images in a tool result (look_at_scene), as data URLs for the chat UI.
+function toolResultImages(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  const images: string[] = [];
+  for (const block of content) {
+    if (block && typeof block === "object" && block.type === "image" && block.source?.type === "base64") {
+      images.push(`data:${block.source.media_type};base64,${block.source.data}`);
+    }
+  }
+  return images;
 }
 
 // Flattens SDK messages into the few event kinds the chat UI renders.
@@ -269,7 +281,13 @@ function forward(message: SDKMessage) {
       if (Array.isArray(message.message.content)) {
         for (const block of message.message.content) {
           if (typeof block === "object" && block.type === "tool_result") {
-            emit({ kind: "tool_result", id: block.tool_use_id, isError: !!block.is_error, text: toolResultText(block.content) });
+            emit({
+              kind: "tool_result",
+              id: block.tool_use_id,
+              isError: !!block.is_error,
+              text: toolResultText(block.content),
+              images: toolResultImages(block.content),
+            });
           }
         }
       }
@@ -338,6 +356,7 @@ function ensureSession(): EditorSession {
 ipcMain.handle("agent:send", (_event, text: string) => {
   // Everything the agent changes while answering this message becomes one undo step.
   setHistoryGroup(`turn-${Date.now()}`);
+  beginUserRequest(text);
   ensureSession().send(text);
 });
 

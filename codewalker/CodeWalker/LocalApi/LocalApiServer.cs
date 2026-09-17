@@ -6,6 +6,7 @@ using System.Net;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections.Concurrent;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using SharpDX;
@@ -117,6 +118,7 @@ namespace CodeWalker.LocalApi
                     case "/delete_prop": responseBody = DeleteProp(requestBody); break;
                     case "/list_props": responseBody = ListProps(requestBody); break;
                     case "/validate": responseBody = ValidateProps(requestBody); break;
+                    case "/look": responseBody = LookAtScene(requestBody); break;
                     case "/get_nearby_entities": responseBody = ListProps(requestBody); break;
                     case "/get_camera_view": responseBody = GetCameraView(); break;
                     case "/save_project": responseBody = SaveProject(requestBody); break;
@@ -216,6 +218,44 @@ namespace CodeWalker.LocalApi
             return (float)Math.Atan2(-front.X, front.Y);
         }
 
+        // World direction the prop's front faces (local -Y, see YawFromRelativeHeading).
+        static Vector3 FrontDirection(YmapEntityDef ent)
+        {
+            return Vector3.Transform(-Vector3.UnitY, ent.Orientation);
+        }
+
+        // Yaw of the prop's front, counter-clockwise from north.
+        static float FrontYaw(YmapEntityDef ent)
+        {
+            Vector3 f = FrontDirection(ent);
+            return (float)Math.Atan2(-f.X, f.Y);
+        }
+
+        // Entity yaw (as used by RawRotationFromYaw) that makes the front face `frontYaw`.
+        static float YawForFront(float frontYaw)
+        {
+            return frontYaw + MathUtil.Pi;
+        }
+
+        static float YawToward(Vector3 from, Vector3 to)
+        {
+            Vector3 d = to - from;
+            return (float)Math.Atan2(-d.X, d.Y);
+        }
+
+        static float NormalizeDegrees(float deg)
+        {
+            return ((deg % 360f) + 360f) % 360f;
+        }
+
+        // Counter-clockwise from north, so 90 = west.
+        static string CompassName(float yawRadians)
+        {
+            string[] names = { "north", "north-west", "west", "south-west", "south", "south-east", "east", "north-east" };
+            int index = (int)Math.Round(NormalizeDegrees(MathUtil.RadiansToDegrees(yawRadians)) / 45f) % 8;
+            return names[index];
+        }
+
         // GTA props' front side is their local -Y (verified in-game with prop_bench_01a), hence the
         // half turn between "facing the camera's forward" and the raw yaw.
         static float YawFromRelativeHeading(CameraFrame cam, float headingDeg)
@@ -245,7 +285,10 @@ namespace CodeWalker.LocalApi
             // the area there are no bounds to test, so a miss reports "complete". Require a few
             // consecutive complete misses before concluding there is no ground.
             int completeMisses = 0;
-            for (int attempt = 0; attempt < 30; attempt++)
+            // Collision files only get queued for loading while the loader's queue is short, so right after
+            // the camera jumps (opening a map, looking at a scene) loading can take several seconds.
+            var waited = System.Diagnostics.Stopwatch.StartNew();
+            while (waited.ElapsedMilliseconds < StreamingTimeoutMs)
             {
                 var ray = new Ray(new Vector3(x, y, fromZ), new Vector3(0, 0, -1));
                 for (int skip = 0; skip < 5; skip++)
@@ -261,7 +304,7 @@ namespace CodeWalker.LocalApi
                         groundZ = hit.Position.Z;
                         return true;
                     }
-                    if (hit.TestComplete && ++completeMisses >= 8) return false;
+                    if (hit.TestComplete && ++completeMisses >= 8 && waited.ElapsedMilliseconds >= 3000) return false;
                     break;
                 }
                 Thread.Sleep(100);
@@ -311,6 +354,10 @@ namespace CodeWalker.LocalApi
 
         // ---------- geometric validation ----------
 
+        // Latest validation outcome per prop id, used to colour boxes in /look images.
+        readonly ConcurrentDictionary<int, bool> lastValidationOk = new ConcurrentDictionary<int, bool>();
+
+        const int StreamingTimeoutMs = 12000;
         const float OverlapTolerance = 0.03f;   // touching props are fine
         const float FloatTolerance = 0.05f;
         const float BuryTolerance = 0.15f;      // a little sinking into uneven ground looks natural
@@ -437,7 +484,8 @@ namespace CodeWalker.LocalApi
                 var spheres = box.InteriorSpheres(floorClearance, 48, out float radius);
                 int hits = 0;
                 Vector3 hitOffset = Vector3.Zero;
-                for (int attempt = 0; attempt < 30; attempt++)
+                var sphereWait = System.Diagnostics.Stopwatch.StartNew();
+                while (true)
                 {
                     hits = 0;
                     hitOffset = Vector3.Zero;
@@ -446,7 +494,7 @@ namespace CodeWalker.LocalApi
                         bool allLoaded = true;
                         foreach (var sphere in spheres)
                         {
-                            var hit = worldForm.Space.SphereIntersect(sphere);
+                            var hit = worldForm.SphereIntersect(sphere);
                             if (!hit.TestComplete) allLoaded = false;
                             if (!hit.Hit) continue;
                             hits++;
@@ -455,7 +503,7 @@ namespace CodeWalker.LocalApi
                         return allLoaded;
                     });
                     worldChecked = complete;
-                    if (complete) break;
+                    if (complete || sphereWait.ElapsedMilliseconds >= StreamingTimeoutMs) break;
                     Thread.Sleep(100);
                 }
                 if (hits > 0)
@@ -480,6 +528,7 @@ namespace CodeWalker.LocalApi
             }
 
             var result = new JObject { ["ok"] = issues.Count == 0 && worldChecked, ["issues"] = issues };
+            lastValidationOk[id] = issues.Count == 0;
             if (!worldChecked) result["note"] = "World collision data for this area wasn't fully loaded; check again";
             return result;
         }
@@ -540,6 +589,8 @@ namespace CodeWalker.LocalApi
                 ["name"] = ent._CEntityDef.archetypeName.ToString(),
                 ["position"] = Vec(ent.Position),
                 ["heading"] = RelativeHeadingDeg(cam, WorldYaw(ent)),
+                ["facing"] = CompassName(FrontYaw(ent)),
+                ["worldHeading"] = (float)Math.Round(NormalizeDegrees(MathUtil.RadiansToDegrees(FrontYaw(ent))), 1),
                 ["distance"] = (float)Math.Round(Vector3.Distance(ent.Position, cam.Position), 2),
                 ["hidden"] = hiddenIds.Contains(GetEntityId(ent)),
                 // Position within its ymap, which is stable across save and load (used to persist folders).
@@ -593,6 +644,7 @@ namespace CodeWalker.LocalApi
             history.Clear();
             future.Clear();
             hiddenIds.Clear();
+            lastValidationOk.Clear(); // ids get reused by the next map's props
             PublishHidden();
         }
 
@@ -750,6 +802,7 @@ namespace CodeWalker.LocalApi
             float headingDeg = req["heading"]?.ToObject<float?>() ?? 0f;
 
             string group = Group(req);
+            int? faceId = req["face_id"]?.ToObject<int?>();
 
             if (string.IsNullOrWhiteSpace(model)) return Fail("model is required");
             model = model.ToLowerInvariant();
@@ -759,11 +812,18 @@ namespace CodeWalker.LocalApi
             string error = null;
             Archetype arch = null;
             var cam = default(CameraFrame);
+            Vector3? faceTarget = null;
             OnUiThread(() =>
             {
                 if (!worldForm.IsWorldLoaded) { error = "The world is still loading"; return 0; }
                 arch = worldForm.GameFileCache.GetArchetype(hash);
                 if (arch == null) { error = $"Unknown prop model '{model}' - use /search_props first"; return 0; }
+                if (faceId.HasValue)
+                {
+                    var faceEntity = ResolveEntity(faceId.Value);
+                    if (faceEntity == null) { error = $"No prop with id {faceId.Value} to face"; return 0; }
+                    faceTarget = faceEntity.Position;
+                }
                 cam = GetCameraFrame();
                 return 0;
             });
@@ -773,7 +833,9 @@ namespace CodeWalker.LocalApi
 
             // Phase 2 (this worker thread): ground snap. The prop's origin is often not at its base
             // (prop_skid_tent_01's bottom is 0.61 m below it), so rest the bounding box bottom on the ground.
-            float placeYaw = YawFromRelativeHeading(cam, headingDeg);
+            float placeYaw = faceTarget.HasValue
+                ? YawForFront(YawToward(target, faceTarget.Value))
+                : YawFromRelativeHeading(cam, headingDeg);
             bool grounded = TryFindSupport(target, placeYaw, arch, Vector3.One, cam.Position.Z, null, out float groundZ);
             Vector3 pos = new Vector3(target.X, target.Y, grounded ? groundZ - arch.BBMin.Z + up : cam.Position.Z + up);
 
@@ -823,26 +885,38 @@ namespace CodeWalker.LocalApi
             float right = req["right"]?.ToObject<float?>() ?? 0f;
             float? up = req["up"]?.ToObject<float?>();
             float turnDeg = req["turn"]?.ToObject<float?>() ?? 0f;
+            float north = req["north"]?.ToObject<float?>() ?? 0f;
+            float east = req["east"]?.ToObject<float?>() ?? 0f;
+            float? worldHeading = req["world_heading"]?.ToObject<float?>();
+            int? faceId = req["face_id"]?.ToObject<int?>();
             string group = Group(req);
 
             YmapEntityDef ent = null;
             var cam = default(CameraFrame);
+            Vector3? faceTarget = null;
             string error = OnUiThread(() =>
             {
                 ent = ResolveEntity(id);
                 if (ent == null) return $"No prop with id {id}";
+                if (faceId.HasValue)
+                {
+                    var target = ResolveEntity(faceId.Value);
+                    if (target == null) return $"No prop with id {faceId.Value} to face";
+                    faceTarget = target.Position;
+                }
                 cam = GetCameraFrame();
                 return null;
             });
             if (error != null) return Fail(error);
 
-            Vector3 pos = OnUiThread(() => ent.Position) + cam.Forward * forward + cam.Right * right;
+            Vector3 pos = OnUiThread(() => ent.Position) + cam.Forward * forward + cam.Right * right + new Vector3(east, north, 0);
+            bool orientationChange = turnDeg != 0 || worldHeading.HasValue || faceTarget.HasValue;
             bool grounded = true;
             if (up.HasValue)
             {
                 pos.Z += up.Value;
             }
-            else if (forward != 0 || right != 0 || turnDeg != 0)
+            else if (forward != 0 || right != 0 || north != 0 || east != 0 || orientationChange)
             {
                 Archetype moveArch = null;
                 Vector3 moveScale = Vector3.One;
@@ -850,7 +924,7 @@ namespace CodeWalker.LocalApi
                 {
                     moveArch = ent.Archetype;
                     moveScale = ent.Scale;
-                    return WorldYaw(ent) + MathUtil.DegreesToRadians(turnDeg);
+                    return TargetYaw(ent, pos, worldHeading, faceTarget, turnDeg);
                 });
                 grounded = TryFindSupport(pos, newYaw, moveArch, moveScale, Math.Max(cam.Position.Z, pos.Z), ent, out float groundZ);
                 if (grounded) pos.Z = groundZ - (moveArch?.BBMin.Z ?? 0f) * moveScale.Z;
@@ -860,7 +934,7 @@ namespace CodeWalker.LocalApi
             {
                 if (ResolveEntity(id) == null) return Fail($"Prop {id} was removed");
                 var pf = worldForm.ProjectForm;
-                float yaw = WorldYaw(ent) + MathUtil.DegreesToRadians(turnDeg);
+                float yaw = TargetYaw(ent, pos, worldHeading, faceTarget, turnDeg);
                 var before = ent._CEntityDef;
                 Record(group, new MovedOp
                 {
@@ -886,6 +960,17 @@ namespace CodeWalker.LocalApi
                 moved["validation"] = ValidateProp(id);
             }
             return moved;
+        }
+
+        // Resulting entity yaw of a move: face a prop, or take an absolute world heading, then add `turn`.
+        static float TargetYaw(YmapEntityDef ent, Vector3 newPosition, float? worldHeading, Vector3? faceTarget, float turnDeg)
+        {
+            float yaw = faceTarget.HasValue
+                ? YawForFront(YawToward(newPosition, faceTarget.Value))
+                : worldHeading.HasValue
+                    ? YawForFront(MathUtil.DegreesToRadians(worldHeading.Value))
+                    : WorldYaw(ent);
+            return yaw + MathUtil.DegreesToRadians(turnDeg);
         }
 
         JObject DeleteProp(JObject req)
@@ -1299,6 +1384,188 @@ namespace CodeWalker.LocalApi
             });
         }
 
+        // ---------- looking at the scene ----------
+
+        static readonly string[] LookViews = { "top", "north", "east", "south", "west", "eye_level" };
+
+        // Waits until nothing is left to stream in for the current view (files, then GPU resources), plus
+        // a short pause for auto-exposure to settle after the camera jump. Worker thread only.
+        void WaitForSettledView()
+        {
+            Thread.Sleep(250);
+            int quiet = 0;
+            for (int i = 0; i < 80 && quiet < 3; i++)
+            {
+                quiet = worldForm.ContentQueueLength == 0 ? quiet + 1 : 0;
+                Thread.Sleep(100);
+            }
+            Thread.Sleep(200);
+        }
+
+        // Renders the scene from several viewpoints and returns annotated JPEGs, then puts the user's
+        // camera back. Body: { "ids": [..] (default: the group of props nearest the camera),
+        // "views": ["top", "south", ...] (default top, south, east), "saveDir": optional folder for copies }
+        JObject LookAtScene(JObject req)
+        {
+            var ids = req["ids"]?.ToObject<int[]>();
+            var views = req["views"]?.ToObject<string[]>() ?? new[] { "top", "south", "east" };
+            string saveDir = req["saveDir"]?.ToString();
+            var unknown = views.Where(v => !LookViews.Contains(v)).ToList();
+            if (unknown.Count > 0) return Fail("Unknown views: " + string.Join(", ", unknown) + ". Use " + string.Join(", ", LookViews));
+            if (views.Length == 0 || views.Length > 6) return Fail("Ask for 1 to 6 views");
+
+            var props = new List<LookProp>();
+            Vector3 center = Vector3.Zero, userForward = Vector3.UnitY;
+            float radius = 8f, fov = 1f;
+            WorldForm.CameraState saved = null;
+            string error = OnUiThread(() =>
+            {
+                if (!worldForm.IsWorldLoaded) return "The world is still loading";
+                var cam = GetCameraFrame();
+                userForward = cam.Forward;
+                fov = Math.Max(worldForm.CameraFieldOfView, 0.3f);
+
+                var all = ProjectEntities().ToList();
+                List<YmapEntityDef> targets;
+                if (ids != null && ids.Length > 0)
+                {
+                    targets = ids.Select(ResolveEntity).Where(e => e != null).ToList();
+                    if (targets.Count == 0) return "None of those ids exist";
+                }
+                else
+                {
+                    targets = ClusterProps(all)
+                        .OrderBy(c => c.Min(e => Vector3.Distance(e.Position, cam.Position)))
+                        .FirstOrDefault() ?? new List<YmapEntityDef>();
+                }
+
+                if (targets.Count > 0)
+                {
+                    Vector3 min = targets[0].Position, max = targets[0].Position;
+                    foreach (var e in targets) { min = Vector3.Min(min, e.Position); max = Vector3.Max(max, e.Position); }
+                    center = (min + max) * 0.5f;
+                    radius = 3f;
+                    foreach (var e in targets) radius = Math.Max(radius, Vector3.Distance(e.Position, center) + e.BSRadius);
+                }
+                else
+                {
+                    // Empty map: look at the ground ahead of the camera.
+                    center = cam.Position + cam.Forward * 10f;
+                }
+
+                foreach (var e in all)
+                {
+                    if (!EntityBox.TryCreate(e, out var box)) continue;
+                    int id = GetEntityId(e);
+                    props.Add(new LookProp
+                    {
+                        Id = id,
+                        Name = e._CEntityDef.archetypeName.ToString(),
+                        Box = box,
+                        Front = FrontDirection(e),
+                        Status = lastValidationOk.TryGetValue(id, out bool ok) ? (ok ? "ok" : "problem") : "unchecked",
+                    });
+                }
+                saved = worldForm.SaveCameraState();
+                return null;
+            });
+            if (error != null) return Fail(error);
+
+            if (TrySnapToSurfaceBelow(center.X, center.Y, center.Z + 50f, null, out float groundZ) && center.Z < groundZ) center.Z = groundZ;
+
+            float distance = Math.Max(radius / (float)Math.Sin(fov * 0.5f) * 1.15f, 6f);
+            var images = new JArray();
+            try
+            {
+                foreach (var view in views)
+                {
+                    Vector3 position, direction;
+                    string caption;
+                    Describe(view, center, distance, radius, userForward, out position, out direction, out caption);
+                    if (view == "eye_level" && TrySnapToSurfaceBelow(position.X, position.Y, position.Z + 20f, null, out float eyeGround))
+                    {
+                        position.Z = eyeGround + 1.7f;
+                        direction = center + new Vector3(0, 0, 0.8f) - position;
+                    }
+
+                    OnUiThread(() =>
+                    {
+                        if (worldForm.IsMapView) worldForm.SetMapView(false);
+                        worldForm.SetCameraPose(position, direction, instant: true);
+                        return 0;
+                    });
+                    WaitForSettledView();
+
+                    var capture = worldForm.FrameCapture.RequestNextFrame();
+                    if (!capture.Wait(5000)) throw new TimeoutException("The renderer didn't produce a frame");
+                    byte[] jpeg = SceneLook.Render(capture.Result, props, center, caption);
+
+                    if (!string.IsNullOrWhiteSpace(saveDir))
+                    {
+                        Directory.CreateDirectory(saveDir);
+                        File.WriteAllBytes(Path.Combine(saveDir, $"look_{view}.jpg"), jpeg);
+                    }
+                    images.Add(new JObject
+                    {
+                        ["view"] = view,
+                        ["caption"] = caption,
+                        ["mimeType"] = "image/jpeg",
+                        ["data"] = Convert.ToBase64String(jpeg),
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                return Fail("Look failed: " + (ex is AggregateException agg ? agg.InnerException?.Message : ex.Message));
+            }
+            finally
+            {
+                OnUiThread(() => { worldForm.RestoreCameraState(saved); return 0; });
+            }
+
+            return new JObject
+            {
+                ["success"] = true,
+                ["center"] = Vec(center),
+                ["radius"] = Round2(radius),
+                ["legend"] = "Boxes: green = passed validation, red = has validation problems, grey = not checked yet. " +
+                             "Yellow arrow = the direction the prop's front faces. #N = prop id. The circled arrow points north.",
+                ["images"] = images,
+            };
+        }
+
+        // Camera pose and caption for a named view around `center`. Headings are counter-clockwise from north.
+        static void Describe(string view, Vector3 center, float distance, float radius, Vector3 userForward,
+            out Vector3 position, out Vector3 direction, out string caption)
+        {
+            float pitch = MathUtil.DegreesToRadians(40f);
+            Vector3 look; // horizontal direction the camera looks in
+            switch (view)
+            {
+                case "top":
+                    position = center + new Vector3(0, 0, distance * 1.05f);
+                    direction = Vector3.Normalize(new Vector3(0, 0.03f, -1f)); // tiny north lean keeps the image north-up
+                    caption = "Top-down view. Up in the image = north, right = east.";
+                    return;
+                case "north": look = -Vector3.UnitY; break;
+                case "south": look = Vector3.UnitY; break;
+                case "east": look = -Vector3.UnitX; break;
+                case "west": look = Vector3.UnitX; break;
+                default: // eye_level: from where the user is looking, at person height (Z fixed by the caller)
+                    look = new Vector3(userForward.X, userForward.Y, 0);
+                    if (look.LengthSquared() < 1e-4f) look = Vector3.UnitY;
+                    look = Vector3.Normalize(look);
+                    position = center - look * Math.Max(distance * 0.6f, radius + 4f);
+                    direction = look;
+                    caption = $"Eye-level view looking {CompassName((float)Math.Atan2(-look.X, look.Y))}; right in the image = {CompassName((float)Math.Atan2(-look.X, look.Y) - MathUtil.PiOverTwo)}.";
+                    return;
+            }
+            direction = look * (float)Math.Cos(pitch) - Vector3.UnitZ * (float)Math.Sin(pitch);
+            position = center - direction * distance;
+            float lookYaw = (float)Math.Atan2(-look.X, look.Y);
+            caption = $"Camera on the {view} side looking {CompassName(lookYaw)}, 40 degrees down. Right in the image = {CompassName(lookYaw - MathUtil.PiOverTwo)}.";
+        }
+
         static JObject UnsavedFailure()
         {
             var result = Fail("The current map has unsaved changes");
@@ -1340,6 +1607,9 @@ namespace CodeWalker.LocalApi
                 pf.CurrentYmapFile = ymap;
 
                 var entities = ymap.AllEntities ?? new YmapEntityDef[0];
+                // Hand out ids now, in file order, so ids given to /validate or /look right after opening
+                // resolve (they are otherwise assigned the first time a prop is listed).
+                foreach (var ent in entities) GetEntityId(ent);
                 if (entities.Length > 0)
                 {
                     Vector3 min = entities[0].Position, max = entities[0].Position;

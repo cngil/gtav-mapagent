@@ -10,17 +10,31 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { codewalker, getHistoryGroup } from "./codewalker.js";
+import { runReview } from "./critic.js";
 import { exportFivemResource, MAP_NAME_PATTERN, saveMap } from "./export.js";
+import { errorResult, INSPECTION_TOOL_NAMES, inspectionTools, text } from "./inspection.js";
 import { layout } from "./layout.js";
+
+// Reviews allowed per user request, so a scene the critic keeps failing can't loop forever.
+export const MAX_REVIEW_ROUNDS = 5;
+
+// The request currently being worked on, as the user wrote it. The critic gets this verbatim rather than
+// the builder's paraphrase.
+const review = { task: "", rounds: 0 };
+
+export function beginUserRequest(userText: string) {
+  review.task = userText;
+  review.rounds = 0;
+}
 
 const SERVER_NAME = "codewalker";
 const TOOL_NAMES = [
   "search_props",
   "place_prop",
-  "list_props",
   "move_prop",
   "delete_prop",
-  "check_props",
+  ...INSPECTION_TOOL_NAMES,
+  "request_review",
   "undo_last_change",
   "redo_last_undo",
   "set_folder",
@@ -28,46 +42,38 @@ const TOOL_NAMES = [
   "get_camera_view",
   "save_map",
   "export_fivem_resource",
-] as const;
+];
 
 const SYSTEM_PROMPT = `You are an assistant that builds GTA V map scenes for a FiveM roleplay server. The user sees a 3D view of the real GTA V world (rendered by CodeWalker) next to this chat, and you edit that world through the codewalker tools. What you place is saved as a .ymap file for the server.
 
 How space works:
-- You cannot see the world. The user flies the camera to where they want to build. If the request depends on the surroundings (a road, a wall, a building), ask the user to describe them or to aim the camera.
-- Positions are relative to the camera, projected onto the ground: forward (meters ahead), right (meters to the right; negative = left), up (meters above the ground). Ground height is found automatically.
-- heading is in degrees relative to the camera: 0 = the prop's front faces the same way the camera looks, 180 = the front faces the camera, 90 = the front turns toward the camera's left, -90 toward its right. A prop's front is where you would sit on a bench or the opening of a tent; for symmetric props heading barely matters.
-- The camera may have moved since earlier turns, so positions and headings from old tool results are stale. Call list_props for fresh values before editing existing props.
+- The user flies the camera to where they want to build. place_prop positions are relative to that camera, projected onto the ground: forward (meters ahead), right (meters to the right; negative = left), up (meters above the ground). Ground height and resting the prop's base on it are automatic.
+- place_prop heading is in degrees relative to the camera: 0 = the prop's front faces the way the camera looks, 180 = it faces the camera, 90 = toward the camera's left. A prop's front is where you would sit on a bench or the opening of a tent.
+- Prefer face_id over headings whenever a prop should face another one (benches toward a fire, chairs toward a table): it turns the prop's front toward that prop exactly.
+- When fixing a scene you have looked at, use world directions: move_prop north/east (meters, negative = south/west) and world_heading (degrees counter-clockwise from north: 0 north, 90 west, 180 south, 270 east). list_props reports every prop's facing and worldHeading in the same terms. The camera-relative forward/right still work but mean the user's current camera, not the image you looked at.
+- The user may move the camera between requests; call list_props for fresh values before editing existing props.
 
-How to work:
-- Never invent model names. Use search_props first and only place names it returned. Search with short English keywords (bench, tent, table, chair, barrier, crate, light, fire, tree, fence). Most placeable props start with "prop_".
-- Use the bounding boxes for spacing. Footprint width is bbMax[0]-bbMin[0] along the prop's own left-right axis and bbMax[1]-bbMin[1] along its front-back axis; a prop turned by 90 degrees swaps the two. Leave at least 0.3 m between props unless they are meant to touch.
-- Every placed prop has an id. To change a scene, prefer move_prop and delete_prop over placing duplicates.
-- Keep the map organised: when you build a named scene or group ("camp", "roadblock"), pass the same folder to place_prop for all of its props, using a short name in the user's language. Users can hide folders or props; hidden props still exist and are saved, they are just not drawn in the editor.
-- Before building near earlier work, call list_props to avoid overlapping what is already there.
-- If a result reports grounded: false, the prop is floating at camera height; tell the user.
+Tools and conventions:
+- Never invent model names. Use search_props and only place names it returned. Search with short English keywords (bench, tent, table, chair, barrier, crate, light, fire, tree, fence). Most placeable props start with "prop_". Model names say little about size: read the bounding boxes (prop_logpile_01 is 8.4 m long).
+- Footprint width is bbMax[0]-bbMin[0] along the prop's own left-right axis and bbMax[1]-bbMin[1] front-to-back; turning by 90 degrees swaps them. Leave at least 0.3 m between props unless they are meant to touch.
+- Every prop has an id. To change a scene, prefer move_prop and delete_prop over placing duplicates.
+- Put the props of a named scene in one folder (place_prop folder), named briefly in the user's language. Hidden props still exist and are saved.
+- Every place_prop and move_prop result has a "validation" report from real geometry; ok: false is a defect. overlap = intersects another prop ("with" id) by depth meters; world_collision = inside a building, wall, fence or other world object on the given side; floating / buried / overhang = base not resting on the ground; steep_ground = sloped ground; no_ground = nothing solid below. suggestedMove values are camera-relative.
+- Only call save_map or export_fivem_resource when the user asks.
 
-Checking your work (you can't see, so rely on these):
-- Every place_prop and move_prop result has a "validation" report computed from real geometry. Treat ok: false as a defect to fix before moving on, not as a note.
-- overlap: the prop intersects another placed prop ("with" is its id) by "depth" meters. Apply suggestedMove with move_prop, or move the other prop. Ignore only when the props are meant to interlock (e.g. a chair tucked under a table).
-- world_collision: part of the prop is inside a building, wall, fence, vehicle or other world object, on the reported side. Apply suggestedMove, and repeat if the next result still collides.
-- floating / buried / overhang: the prop's base isn't resting on the ground (gap or depth in meters). Use move_prop with up, or move it to flatter ground.
-- steep_ground: the ground under the prop slopes by that many degrees; props stay level, so pick a flatter spot for anything larger than a stool.
-- no_ground: nothing solid under it (water, a ledge); move it.
-- After finishing a scene, call check_props on the ids you placed and fix whatever it reports. Tell the user about any problem you chose not to fix, and why.
-- Arrange scenes the way a real place would look (chairs around a table facing it, benches facing a fire), not in a grid.
-- If the user wants to take back an earlier request, use undo_last_change: it reverts everything done in the previous request at once, and redo_last_undo brings it back. For a single prop, move_prop or delete_prop is more precise.
-- Only call save_map or export_fivem_resource when the user asks. export_fivem_resource saves the map and also writes a FiveM resource folder they can copy into their server's resources.
-- Reply in the user's language, briefly: what you did and anything that needs their attention.`;
+How to complete a building request — keep going until it is actually done, don't stop at a first draft:
+1. Write a short acceptance checklist of concrete, checkable points the result must satisfy (what props, how many, arrangement, which way they face, spacing, nothing clipping or floating). Show it to the user in one or two lines before building.
+2. Build it.
+3. Run check_props on the props of the scene and fix every problem.
+4. Call look_at_scene on those props and compare what you see against the checklist: facing arrows, spacing, whether it looks like the real thing. Fix what's wrong and look again when a fix was significant.
+5. Call request_review with the checklist and the prop ids. An independent reviewer inspects the scene without seeing your reasoning. If it fails, apply its fixes (or better ones) and request another review. You have ${MAX_REVIEW_ROUNDS} reviews per request.
+6. Finish with a brief report in the user's language: what you built, the reviewer's verdict, and anything still not right if you ran out of reviews.
+Questions or small edits ("move #4 a bit left", "what's here?") don't need the checklist or a review.
 
-function text(value: unknown) {
-  return { content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value) }] };
-}
+- If the user wants to take back an earlier request, use undo_last_change (reverts the whole previous request); redo_last_undo brings it back.
+- Reply in the user's language, briefly.`;
 
-function errorResult(err: unknown) {
-  return { content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }], isError: true };
-}
-
-function createTools(mapsDir: string) {
+function createTools(mapsDir: string, workDir: string, currentModel: () => string | undefined) {
   return createSdkMcpServer({
     name: SERVER_NAME,
     version: "0.1.0",
@@ -97,11 +103,12 @@ function createTools(mapsDir: string) {
           right: z.number().describe("Meters to the camera's right; negative is left"),
           up: z.number().optional().describe("Meters above the ground, default 0"),
           heading: z.number().optional().describe("Degrees. 0 = front faces away from camera, 180 = front faces camera, 90 = front toward camera's left"),
+          face_id: z.number().int().optional().describe("Turn the prop's front toward this prop instead of using heading"),
           folder: z.string().optional().describe("Folder to put the prop in; created if missing"),
         },
-        async ({ model, forward, right, up, heading, folder }) => {
+        async ({ model, forward, right, up, heading, face_id, folder }) => {
           try {
-            const placed = await codewalker.placeProp({ model, forward, right, up: up ?? 0, heading: heading ?? 0 });
+            const placed = await codewalker.placeProp({ model, forward, right, up: up ?? 0, heading: heading ?? 0, face_id });
             if (folder) await layout.assign([placed.id], folder);
             return text({ ...placed, folder: layout.folderOf(placed.id) });
           } catch (err) {
@@ -110,27 +117,18 @@ function createTools(mapsDir: string) {
         },
       ),
       tool(
-        "list_props",
-        "List the map's folders and props (id, model name, folder, hidden, position, heading and distance relative to the camera's current view).",
-        { radius: z.number().min(1).max(2000).optional().describe("Only props within this many meters of the camera; omit for all") },
-        async ({ radius }) => {
-          try {
-            const props = (await layout.props()).filter((p) => radius === undefined || p.distance <= radius);
-            return text({ folders: layout.listFolders(), props });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
-      ),
-      tool(
         "move_prop",
-        "Move a placed prop by an offset in the camera's frame and/or turn it. Without up it is re-snapped to the ground at the new spot.",
+        "Move and/or turn a placed prop. Offsets can be world directions (north/east) or relative to the user's camera (forward/right); they add up. Without up it is re-snapped to the ground at the new spot.",
         {
           id: z.number().int().describe("Prop id from place_prop or list_props"),
-          forward: z.number().optional().describe("Meters to move away from the camera (negative = toward it)"),
-          right: z.number().optional().describe("Meters to move to the camera's right (negative = left)"),
+          north: z.number().optional().describe("Meters north (negative = south)"),
+          east: z.number().optional().describe("Meters east (negative = west)"),
+          forward: z.number().optional().describe("Meters away from the user's camera (negative = toward it)"),
+          right: z.number().optional().describe("Meters to the user's camera's right (negative = left)"),
           up: z.number().optional().describe("Meters to raise (negative = lower); disables ground snapping"),
-          turn: z.number().optional().describe("Degrees to rotate; positive = counter-clockwise seen from above"),
+          face_id: z.number().int().optional().describe("Turn the prop's front toward this prop"),
+          world_heading: z.number().optional().describe("Absolute direction for the prop's front, degrees counter-clockwise from north (0 N, 90 W, 180 S, 270 E)"),
+          turn: z.number().optional().describe("Degrees to rotate on top of the above; positive = counter-clockwise seen from above"),
         },
         async (args) => {
           try {
@@ -152,14 +150,22 @@ function createTools(mapsDir: string) {
           }
         },
       ),
+      ...inspectionTools(),
       tool(
-        "check_props",
-        "Re-run the geometric validation (overlaps, world collisions, ground contact) for props. Returns only props with problems.",
-        { ids: z.array(z.number().int()).optional().describe("Prop ids; omit to check the whole map") },
-        async ({ ids }) => {
+        "request_review",
+        `Have an independent reviewer inspect the finished scene against your acceptance checklist and the user's original request. Returns pass/fail, the checklist judged item by item, and issues with prop ids and fixes. Limited to ${MAX_REVIEW_ROUNDS} per request.`,
+        {
+          checklist: z.array(z.string()).min(1).describe("Concrete, checkable acceptance points"),
+          ids: z.array(z.number().int()).min(1).describe("Ids of the props that make up the scene"),
+        },
+        async ({ checklist, ids }) => {
+          if (review.rounds >= MAX_REVIEW_ROUNDS) {
+            return errorResult(`All ${MAX_REVIEW_ROUNDS} reviews for this request are used. Stop and tell the user what is still wrong.`);
+          }
+          review.rounds++;
           try {
-            const result = await codewalker.validate(ids);
-            return text(result.problems.length ? result : `All ${result.checked} checked props are fine.`);
+            const { verdict } = await runReview({ task: review.task, checklist, ids, model: currentModel(), workDir });
+            return text({ round: review.rounds, maxRounds: MAX_REVIEW_ROUNDS, ...verdict });
           } catch (err) {
             return errorResult(err);
           }
@@ -288,7 +294,7 @@ export class EditorSession {
         systemPrompt: SYSTEM_PROMPT,
         cwd: this.options.workDir,
         tools: [],
-        mcpServers: { [SERVER_NAME]: createTools(this.options.mapsDir) },
+        mcpServers: { [SERVER_NAME]: createTools(this.options.mapsDir, this.options.workDir, () => this.model) },
         allowedTools: TOOL_NAMES.map((name) => `mcp__${SERVER_NAME}__${name}`),
         permissionMode: "dontAsk",
         settingSources: [],

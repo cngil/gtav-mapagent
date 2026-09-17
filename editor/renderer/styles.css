@@ -17,11 +17,28 @@ body {
   margin: 0;
   height: 100vh;
   display: flex;
+  flex-direction: column;
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
   font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
 }
+
+#workspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+}
+#scene-panel { width: 300px; border-right: 1px solid var(--border); }
+#chat-panel { width: 400px; border-left: 1px solid var(--border); }
+.panel-title { font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; color: var(--muted); }
 
 #left {
   flex: 1;
@@ -29,6 +46,28 @@ body {
   display: flex;
   flex-direction: column;
 }
+
+#status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 10px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 12px;
+}
+.status-label { color: var(--muted); }
+.activity { color: var(--warn); }
+.activity[hidden] { display: none; }
+
+.shots { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--border); }
+.shots img { width: calc(50% - 3px); border-radius: 4px; cursor: zoom-in; border: 1px solid var(--border); }
+.shots img.expanded { width: 100%; cursor: zoom-out; }
+.review { padding: 6px 8px; border-top: 1px solid var(--border); }
+.review ul { margin: 4px 0 0; padding-left: 18px; }
+.review .met { color: var(--ok); }
+.review .unmet { color: var(--err); }
 
 #view-toolbar {
   display: flex;
@@ -59,19 +98,10 @@ body {
 }
 #viewport-message { color: var(--muted); font-size: 13px; text-align: center; padding: 20px; }
 
-#sidebar {
-  width: 440px;
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--border);
-  min-height: 0;
-}
-
-#props { border-bottom: 1px solid var(--border); background: var(--panel); font-size: 12px; }
-#props summary { padding: 6px 12px; cursor: pointer; user-select: none; }
+#props { flex: 1; min-height: 0; display: flex; flex-direction: column; font-size: 12px; }
+#props .section-header { display: flex; align-items: center; gap: 6px; padding: 6px 12px; color: var(--muted); }
 .count { color: var(--muted); }
-#prop-list { list-style: none; margin: 0; padding: 0 6px 6px; max-height: 280px; overflow-y: auto; }
-#props summary { display: flex; align-items: center; gap: 6px; }
+#prop-list { flex: 1; min-height: 0; list-style: none; margin: 0; padding: 0 6px 6px; overflow-y: auto; }
 .summary-button { margin-left: auto; padding: 0 8px; line-height: 18px; }
 #prop-list .folder { font-weight: 600; cursor: pointer; }
 #prop-list .folder .twisty { width: 12px; color: var(--muted); }
@@ -88,7 +118,7 @@ body {
 #prop-list button { padding: 0 6px; font-size: 12px; line-height: 18px; }
 #prop-list .empty { color: var(--muted); padding: 2px 6px; }
 
-header {
+.panel-header {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -140,8 +170,7 @@ header {
 .dot.on { background: var(--ok); }
 .dot.off { background: var(--err); }
 .model-select {
-  margin-left: auto;
-  max-width: 190px;
+  max-width: 220px;
   background: #2a2e37;
   color: var(--text);
   border: 1px solid var(--border);
@@ -152,12 +181,14 @@ header {
 }
 .usage {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  margin-top: 6px;
+  gap: 14px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
+.status-sep { width: 1px; height: 16px; background: var(--border); }
 .usage[hidden] { display: none; }
 .usage .warn { color: var(--warn); }
 .usage .err { color: var(--err); }

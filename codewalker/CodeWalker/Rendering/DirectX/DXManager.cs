@@ -21,6 +21,10 @@ namespace CodeWalker.Rendering
         // An embedded (child window) CodeWalker is never the active form, so it must not throttle.
         public static bool ThrottleWhenInactive = true;
 
+        // Raised on the render thread after a frame is drawn and before Present (after Present the back
+        // buffer is undefined with SwapEffect.Discard).
+        public event Action<DeviceContext, Texture2D> FrameRendered;
+
         private DXForm dxform;
 
         public Device device { get; private set; }
@@ -326,6 +330,15 @@ namespace CodeWalker.Rendering
                     }
 
                     dxform.RenderScene(context);
+
+                    try
+                    {
+                        FrameRendered?.Invoke(context, backbuffer);
+                    }
+                    catch
+                    {
+                        // A failed capture must not take the render loop down.
+                    }
 
                     try
                     {

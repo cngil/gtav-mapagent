@@ -21,6 +21,18 @@ export interface PlacedProp {
   distance: number;
   hidden: boolean;
   index: number; // position within the ymap, stable across save/load
+  facing: string; // compass direction the prop's front points to
+  worldHeading: number; // degrees counter-clockwise from north
+}
+
+export const LOOK_VIEWS = ["top", "north", "east", "south", "west", "eye_level"] as const;
+export type LookView = (typeof LOOK_VIEWS)[number];
+
+export interface LookResult {
+  center: Vec3;
+  radius: number;
+  legend: string;
+  images: { view: LookView; caption: string; mimeType: string; data: string }[];
 }
 
 // Geometric check of a placed prop. suggestedMove is a move_prop delta in the camera's frame.
@@ -132,10 +144,20 @@ export const codewalker = {
         .map((entry) => entry.prop),
     ),
 
-  placeProp: (args: { model: string; forward: number; right: number; up: number; heading: number }) =>
+  placeProp: (args: { model: string; forward: number; right: number; up: number; heading: number; face_id?: number }) =>
     post<PlacementResult>("/place_entity", { ...args, group: currentGroup }),
 
-  moveProp: (args: { id: number; forward?: number; right?: number; up?: number; turn?: number }) =>
+  moveProp: (args: {
+    id: number;
+    forward?: number;
+    right?: number;
+    north?: number;
+    east?: number;
+    up?: number;
+    turn?: number;
+    world_heading?: number;
+    face_id?: number;
+  }) =>
     post<PlacementResult>("/move_prop", { ...args, group: currentGroup }),
 
   deleteProp: (id: number, group = currentGroup) => post<{ id: number }>("/delete_prop", { id, group }),
@@ -160,6 +182,9 @@ export const codewalker = {
       ids?.length ? { ids } : {},
       120_000,
     ),
+
+  // Renders annotated views of the scene; moves the camera while capturing and restores it.
+  look: (args: { ids?: number[]; views?: LookView[] }) => post<LookResult>("/look", args, 180_000),
 
   listProps: (radius?: number) =>
     post<{ results: PlacedProp[] }>("/list_props", radius === undefined ? {} : { radius }).then((r) => r.results),

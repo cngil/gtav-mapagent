@@ -234,6 +234,7 @@ namespace CodeWalker
 
             Renderer = new Renderer(this, gameFileCache);
             camera = Renderer.camera;
+            Renderer.DXMan.FrameRendered += (ctx, backBuffer) => FrameCapture.OnFrameRendered(ctx, backBuffer, camera);
             timecycle = Renderer.timecycle;
             weather = Renderer.weather;
             clouds = Renderer.clouds;
@@ -2400,9 +2401,22 @@ namespace CodeWalker
             return ret;
         }
 
+        // Space's stores hand out one shared result list per query, which the render thread iterates while
+        // drawing, so queries from other threads must hold the render lock (it's reentrant for the renderer).
         public SpaceRayIntersectResult Raycast(Ray ray)
         {
-            return space.RayIntersect(ray, float.MaxValue, collisionmeshlayers);
+            lock (Renderer.RenderSyncRoot)
+            {
+                return space.RayIntersect(ray, float.MaxValue, collisionmeshlayers);
+            }
+        }
+
+        public SpaceSphereIntersectResult SphereIntersect(BoundingSphere sphere)
+        {
+            lock (Renderer.RenderSyncRoot)
+            {
+                return space.SphereIntersect(sphere, collisionmeshlayers);
+            }
         }
 
         private void UpdateMouseHits()
@@ -6194,6 +6208,44 @@ namespace CodeWalker
 
         public float CameraFieldOfView { get { return camera.FieldOfView; } } // vertical, radians
 
+        public LocalApi.FrameCapture FrameCapture { get; } = new LocalApi.FrameCapture();
+
+        // Work still queued for loading: files, then GPU resources. Zero means the view is fully streamed in.
+        public int ContentQueueLength { get { return gameFileCache.QueueLength + Renderer.RenderableCache.TotalQueueLength; } }
+
+        public class CameraState
+        {
+            public bool MapView;
+            public Vector3 Position;
+            public Vector3 TargetRotation, CurrentRotation;
+            public float TargetDistance, CurrentDistance, MapSize;
+        }
+
+        public CameraState SaveCameraState()
+        {
+            return new CameraState
+            {
+                MapView = MapViewEnabled,
+                Position = camera.FollowEntity.Position,
+                TargetRotation = camera.TargetRotation,
+                CurrentRotation = camera.CurrentRotation,
+                TargetDistance = camera.TargetDistance,
+                CurrentDistance = camera.CurrentDistance,
+                MapSize = camera.OrthographicTargetSize,
+            };
+        }
+
+        public void RestoreCameraState(CameraState state)
+        {
+            if (MapViewEnabled != state.MapView) SetMapView(state.MapView);
+            camera.FollowEntity.Position = state.Position;
+            camera.TargetRotation = state.TargetRotation;
+            camera.CurrentRotation = state.CurrentRotation;
+            camera.TargetDistance = state.TargetDistance;
+            camera.CurrentDistance = state.CurrentDistance;
+            camera.OrthographicTargetSize = state.MapSize;
+        }
+
         public float MapViewSize
         {
             get { return camera.OrthographicTargetSize; }
@@ -6208,7 +6260,7 @@ namespace CodeWalker
 
         // Free camera at `position` looking along `direction` (world space). Rotation animates with the
         // camera's normal smoothing.
-        public void SetCameraPose(Vector3 position, Vector3 direction)
+        public void SetCameraPose(Vector3 position, Vector3 direction, bool instant = false)
         {
             camera.FollowEntity.Position = position;
             // Close the orbit distance that GoToPosition may have opened, so the camera sits at `position`.
@@ -6227,6 +6279,7 @@ namespace CodeWalker
             float delta = yaw - current;
             delta -= (float)(Math.Round(delta / (2 * Math.PI)) * 2 * Math.PI);
             camera.TargetRotation = new Vector3(current + delta, pitch, camera.TargetRotation.Z);
+            if (instant) camera.CurrentRotation = camera.TargetRotation;
         }
 
         // Creates the project window if needed. When embedded it stays hidden: the host app is the UI.

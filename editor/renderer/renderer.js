@@ -5,6 +5,20 @@ const sendButton = document.getElementById("send");
 const stopButton = document.getElementById("stop");
 const modelSelect = document.getElementById("model-select");
 const usageBar = document.getElementById("usage");
+const activityLabel = document.getElementById("activity");
+
+// Long-running tools get a status bar note, since the camera moves on its own while they run.
+const ACTIVITY = {
+  look_at_scene: "Agent sahneye bakıyor…",
+  request_review: "Eleştirmen inceliyor…",
+};
+const activeTools = new Map();
+
+function refreshActivity() {
+  const latest = [...activeTools.values()].pop();
+  activityLabel.hidden = !latest;
+  activityLabel.textContent = latest ?? "";
+}
 const mode3dButton = document.getElementById("mode-3d");
 const mode2dButton = document.getElementById("mode-2d");
 const headingLabel = document.getElementById("camera-heading");
@@ -81,6 +95,10 @@ function describeTool(name, args) {
     }
     case "check_props":
       return args.ids?.length ? args.ids.map((id) => `#${id}`).join(", ") : "tüm harita";
+    case "look_at_scene":
+      return `${(args.views ?? ["top", "south", "east"]).join(", ")}${args.ids?.length ? ` · ${args.ids.length} obje` : ""}`;
+    case "request_review":
+      return `${args.checklist?.length ?? 0} maddelik kontrol listesi · ${args.ids?.length ?? 0} obje`;
     case "undo_last_change":
       return "önceki isteğin değişiklikleri";
     case "redo_last_undo":
@@ -121,6 +139,8 @@ const TOOL_LABELS = {
   move_prop: "Taşı",
   delete_prop: "Sil",
   check_props: "Kontrol et",
+  look_at_scene: "Sahneye bak",
+  request_review: "Eleştirmen",
   undo_last_change: "Geri al",
   redo_last_undo: "İleri al",
   set_folder: "Klasöre taşı",
@@ -140,6 +160,48 @@ function onToolUse({ id, name, input: args }) {
   card.append(summary, body);
   toolCards.set(id, { card, summary, body, name });
   append(card);
+  if (ACTIVITY[name]) {
+    activeTools.set(id, ACTIVITY[name]);
+    refreshActivity();
+  }
+}
+
+function addShots(card, images) {
+  const shots = document.createElement("div");
+  shots.className = "shots";
+  for (const src of images) {
+    const img = document.createElement("img");
+    img.src = src;
+    img.addEventListener("click", () => img.classList.toggle("expanded"));
+    shots.appendChild(img);
+  }
+  card.appendChild(shots);
+  card.open = true;
+}
+
+function addReview(card, verdict) {
+  const box = document.createElement("div");
+  box.className = "review";
+  const headline = document.createElement("div");
+  headline.className = verdict.pass ? "met" : "unmet";
+  headline.textContent = `${verdict.pass ? "Geçti" : "Kaldı"} · tur ${verdict.round}/${verdict.maxRounds}: ${verdict.summary}`;
+  box.appendChild(headline);
+  const list = document.createElement("ul");
+  for (const item of verdict.checklist ?? []) {
+    const li = document.createElement("li");
+    li.className = item.met ? "met" : "unmet";
+    li.textContent = `${item.met ? "✓" : "✗"} ${item.item}${item.note ? ` — ${item.note}` : ""}`;
+    list.appendChild(li);
+  }
+  for (const issue of verdict.issues ?? []) {
+    const li = document.createElement("li");
+    li.className = "unmet";
+    li.textContent = `${issue.ids.map((id) => `#${id}`).join(", ")}: ${issue.problem} → ${issue.fix}`;
+    list.appendChild(li);
+  }
+  box.appendChild(list);
+  card.appendChild(box);
+  card.open = !verdict.pass;
 }
 
 const ISSUE_LABELS = {
@@ -156,9 +218,20 @@ function describeIssues(issues = []) {
   return [...new Set(issues.map((issue) => ISSUE_LABELS[issue.type] ?? issue.type))].join(", ");
 }
 
-function onToolResult({ id, isError, text }) {
+function onToolResult({ id, isError, text, images }) {
+  if (activeTools.delete(id)) refreshActivity();
   const entry = toolCards.get(id);
   if (!entry) return;
+  if (!isError && images?.length) addShots(entry.card, images);
+  if (!isError && entry.name === "request_review") {
+    try {
+      const verdict = JSON.parse(text);
+      addReview(entry.card, verdict);
+      entry.card.classList.add(verdict.pass ? "ok" : "warn");
+      entry.summary.insertAdjacentHTML("beforeend", ` <span class="note">— ${verdict.pass ? "geçti" : "kaldı"} (tur ${verdict.round}/${verdict.maxRounds})</span>`);
+      return;
+    } catch {}
+  }
   let status = isError ? "err" : "ok";
   let note = "";
   if (!isError && (entry.name === "place_prop" || entry.name === "move_prop")) {
@@ -232,6 +305,8 @@ window.editor.onEvent((event) => {
       break;
     case "done":
       setBusy(false);
+      activeTools.clear();
+      refreshActivity();
       refreshState();
       if (!event.ok && event.error) {
         const el = document.createElement("div");
@@ -345,8 +420,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 document.getElementById("new-folder").addEventListener("click", (e) => {
-  e.preventDefault(); // the button sits inside <summary>; don't collapse the list
-  document.getElementById("props").open = true;
+  e.preventDefault();
   startNameEdit(propList, "", async (name) => {
     await window.editor.createFolder(name);
   });
@@ -557,7 +631,7 @@ document.getElementById("focus-all").addEventListener("click", async () => {
     const result = await window.editor.cameraFocus();
     headingLabel.textContent =
       result.clusters > 1
-        ? `Grup ${result.cluster}/${result.clusters} · ${result.focused} obje (tekrar bas: sıradaki grup)`
+        ? `Grup ${result.cluster}/${result.clusters} · ${result.focused} obje`
         : `${result.focused} obje`;
   } catch (err) {
     notice(`Kamera: ${errorMessage(err)}`);
@@ -589,7 +663,7 @@ function reportViewportBounds() {
 new ResizeObserver(reportViewportBounds).observe(viewport);
 
 // Clicking the sidebar doesn't pull keyboard focus back from the embedded 3D view on its own.
-for (const id of ["sidebar", "view-toolbar"]) {
+for (const id of ["scene-panel", "chat-panel", "view-toolbar", "status-bar"]) {
   document.getElementById(id).addEventListener("pointerdown", () => window.editor.releaseViewportFocus(), true);
 }
 window.addEventListener("resize", reportViewportBounds);
