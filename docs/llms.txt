@@ -1,0 +1,16 @@
+# GTA V Map Agent
+
+> Free, open-source AI map editor for GTA V on Windows (MIT). You describe a scene in plain language ("a camp with a fire, three benches facing it and two tents") and a Claude agent places real GTA V props in the game world, checks them for collisions and floating, looks at the result from several angles, and fixes it until an independent AI critic accepts it. Maps are saved as .ymap and export to FiveM, alt:V, RAGE Multiplayer, Menyoo (singleplayer) or JSON.
+
+- The 3D view is CodeWalker (dexyfex/CodeWalker) rendering the user's own GTA V files, embedded in an Electron app; a fork of CodeWalker adds a local HTTP API the agent uses. Game files are only read, never changed.
+- The AI runs through the user's own Claude Code sign-in (Claude Agent SDK); a Claude subscription works without an API key. The agent only has map tools (search, place, move, delete, check, look, export), no file or shell access.
+- Every map is a project with its own chats, saved automatically; chats can be reopened and continued, or settled (read-only).
+- Export: FiveM resource (fxmanifest.lua + streamed .ymap), alt:V dlc resource (resource.toml + stream.toml), RAGE:MP server package (mp.objects.new), Menyoo Object Spooner XML, plain .ymap, JSON.
+- Requirements: Windows 10/11, GTA V for PC, .NET SDK, Node.js 18+, Claude Code signed in. Install: clone the repo, `cd editor`, `npm install`, `npm run start:all`.
+- Not included: new models, MLOs or interiors; it places existing GTA V props. Not affiliated with Rockstar Games, Take-Two, Cfx.re, alt:V, RAGE:MP, Menyoo or Anthropic.
+
+## Links
+
+- [README](https://github.com/cngil/gtav-mapagent#readme): features, install, usage, FAQ
+- [Contributing](https://github.com/cngil/gtav-mapagent/blob/main/CONTRIBUTING.md): project layout, local API, adding an export platform
+- [Source](https://github.com/cngil/gtav-mapagent)

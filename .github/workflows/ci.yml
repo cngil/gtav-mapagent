@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  editor:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: editor
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editor/package-lock.json
+
+      # --ignore-scripts: the Electron binary isn't needed to type-check.
+      - name: Install
+        run: npm ci --ignore-scripts
+
+      - name: Type-check and compile
+        run: npm run build
+
+      - name: Renderer syntax
+        shell: bash
+        run: for f in renderer/*.js scripts/*.mjs; do node --check "$f"; done
+
+  codewalker:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Build CodeWalker
+        run: dotnet build codewalker/CodeWalker/CodeWalker.csproj -c Debug
