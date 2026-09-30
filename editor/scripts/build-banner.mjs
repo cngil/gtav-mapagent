@@ -11,11 +11,11 @@ const dataUrl = (file) => `data:image/png;base64,${fs.readFileSync(path.join(roo
 const html = `<!doctype html><html><head><meta charset="utf-8"><style>
   * { box-sizing: border-box; margin: 0; }
   body {
-    width: 1280px; height: 640px; overflow: hidden; display: flex; align-items: center; gap: 44px; padding: 0 0 0 72px;
+    width: 1280px; height: 640px; overflow: hidden; display: flex; align-items: center; gap: 44px; padding: 0 64px 0 72px;
     font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif; color: #e8eaee;
     background: radial-gradient(circle at 85% 20%, #1d3160 0%, transparent 55%), linear-gradient(135deg, #0c0f16 0%, #141a2a 60%, #1a2544 100%);
   }
-  .text { width: 470px; flex-shrink: 0; }
+  .text { width: 440px; flex-shrink: 0; }
   .brand { display: flex; align-items: center; gap: 20px; margin-bottom: 30px; }
   .brand img { width: 84px; height: 84px; }
   h1 { font-size: 52px; font-weight: 700; line-height: 1.05; letter-spacing: -0.5px; }
@@ -23,7 +23,7 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><style>
   .platforms { font-size: 21px; font-weight: 600; color: #7ea4ff; margin-bottom: 14px; }
   .platforms span { color: #4a5670; margin: 0 8px; }
   .foot { font-size: 18px; color: #7b8494; }
-  .shot { flex-shrink: 0; width: 720px; border-radius: 12px; overflow: hidden; border: 1px solid #2c3444;
+  .shot { flex: 1; min-width: 0; border-radius: 12px; overflow: hidden; border: 1px solid #2c3444;
     box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04); }
   .shot img { display: block; width: 100%; }
 </style></head><body>
