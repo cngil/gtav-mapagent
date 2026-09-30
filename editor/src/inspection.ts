@@ -2,6 +2,7 @@ import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { codewalker, LOOK_VIEWS } from "./codewalker.js";
 import { layout } from "./layout.js";
+import { getSettings } from "./settings.js";
 
 export function text(value: unknown) {
   return { content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value) }] };
@@ -50,11 +51,11 @@ export function inspectionTools() {
           .min(1)
           .max(6)
           .optional()
-          .describe("Viewpoints, default top, south, east. top shows layout and spacing; the sides show facing and height; eye_level shows how a player sees it"),
+          .describe("Viewpoints; the default set is chosen by the user in the editor settings. top shows layout and spacing; the sides show facing and height; eye_level shows how a player sees it"),
       },
       async ({ ids, views }) => {
         try {
-          const look = await codewalker.look({ ids, views });
+          const look = await codewalker.look({ ids, views: views ?? getSettings().look.views });
           return {
             content: [
               { type: "text" as const, text: `${look.legend} Framed around ${look.center.map((v) => v.toFixed(1)).join(", ")} with radius ${look.radius} m.` },

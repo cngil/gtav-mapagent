@@ -1,18 +1,21 @@
 {
-  "name": "editor",
+  "name": "gtav-mapagent",
+  "productName": "GTA V Map Agent",
   "version": "1.0.0",
-  "description": "",
+  "description": "AI-assisted map editor for GTA V",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc",
     "smoke": "tsc && node dist/smoke.js",
-    "start": "tsc && electron .",
+    "start": "tsc && node scripts/electron.mjs .",
+    "icon": "node scripts/electron.mjs scripts/build-icon.mjs",
     "build:codewalker": "dotnet build ../codewalker/CodeWalker/CodeWalker.csproj -c Debug",
-    "start:all": "npm run build:codewalker && npm start"
+    "start:all": "npm run build:codewalker && npm start",
+    "banner": "node scripts/electron.mjs scripts/build-banner.mjs"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "cngil",
+  "license": "MIT",
   "type": "module",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.273",
@@ -24,5 +27,9 @@
     "@types/node": "^24.13.5",
     "electron": "^44.4.1",
     "typescript": "^7.0.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cngil/gtav-mapagent.git"
   }
 }

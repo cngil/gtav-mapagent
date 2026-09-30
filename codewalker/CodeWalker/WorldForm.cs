@@ -519,7 +519,7 @@ namespace CodeWalker
 
             var s = Settings.Default;
 
-            float moveSpeed = 50.0f;
+            float moveSpeed = 50.0f * CameraMoveSpeedScale;
 
 
             Input.Update();
@@ -2314,7 +2314,7 @@ namespace CodeWalker
 
                 camera.SetFollowEntity(camEntity);
                 camera.TargetDistance = 1.0f; //default?
-                camera.Smoothness = Settings.Default.CameraSmoothing;
+                camera.Smoothness = CameraSmoothingOverride ?? Settings.Default.CameraSmoothing;
 
                 Cursor.Show();
             }
@@ -6207,6 +6207,27 @@ namespace CodeWalker
         public Vector3 CameraFocusPosition { get { return camera.FollowEntity.Position; } }
 
         public float CameraFieldOfView { get { return camera.FieldOfView; } } // vertical, radians
+
+        // Camera feel set by the host editor (LocalApi /camera/settings). Kept in memory only, so CodeWalker's
+        // own saved settings are left alone.
+        public float CameraMoveSpeedScale = 1.0f;
+        float? CameraSmoothingOverride;
+        public float CameraSensitivity { get { return camera.Sensitivity; } }
+        public float CameraSmoothing { get { return camera.Smoothness; } }
+        public bool IsMouseInverted { get { return MouseInvert; } }
+
+        public void ApplyCameraSettings(float moveSpeedScale, float sensitivity, float smoothing, float fieldOfView, bool invertMouse)
+        {
+            CameraMoveSpeedScale = moveSpeedScale;
+            CameraSmoothingOverride = smoothing;
+            SetCameraSensitivity(sensitivity, smoothing);
+            SetMouseInverted(invertMouse);
+            lock (Renderer.RenderSyncRoot)
+            {
+                camera.FieldOfView = fieldOfView;
+                camera.UpdateProj = true;
+            }
+        }
 
         public LocalApi.FrameCapture FrameCapture { get; } = new LocalApi.FrameCapture();
 

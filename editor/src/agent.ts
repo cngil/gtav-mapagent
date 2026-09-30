@@ -3,6 +3,7 @@ import {
   createSdkMcpServer,
   query,
   tool,
+  type EffortLevel,
   type ModelInfo,
   type Query,
   type SDKMessage,
@@ -11,12 +12,11 @@ import {
 import { z } from "zod";
 import { codewalker, getHistoryGroup } from "./codewalker.js";
 import { runReview } from "./critic.js";
-import { exportFivemResource, MAP_NAME_PATTERN, saveMap } from "./export.js";
+import { APP_ID } from "./app-info.js";
+import { EXPORT_TARGET_INFO, EXPORT_TARGETS, MAP_NAME_PATTERN, type ExportResult, type ExportTarget } from "./export.js";
 import { errorResult, INSPECTION_TOOL_NAMES, inspectionTools, text } from "./inspection.js";
 import { layout } from "./layout.js";
-
-// Reviews allowed per user request, so a scene the critic keeps failing can't loop forever.
-export const MAX_REVIEW_ROUNDS = 5;
+import { getSettings } from "./settings.js";
 
 // The request currently being worked on, as the user wrote it. The critic gets this verbatim rather than
 // the builder's paraphrase.
@@ -40,11 +40,10 @@ const TOOL_NAMES = [
   "set_folder",
   "set_visibility",
   "get_camera_view",
-  "save_map",
-  "export_fivem_resource",
+  "export_map",
 ];
 
-const SYSTEM_PROMPT = `You are an assistant that builds GTA V map scenes for a FiveM roleplay server. The user sees a 3D view of the real GTA V world (rendered by CodeWalker) next to this chat, and you edit that world through the codewalker tools. What you place is saved as a .ymap file for the server.
+const SYSTEM_PROMPT = `You are an assistant that builds GTA V map scenes, usually for multiplayer servers (FiveM, alt:V, RAGE:MP) or singleplayer mods. The user sees a 3D view of the real GTA V world (rendered by CodeWalker) next to this chat, and you edit that world through the codewalker tools. The map belongs to a project and is saved automatically as a .ymap file; it can also be exported for several platforms.
 
 How space works:
 - The user flies the camera to where they want to build. place_prop positions are relative to that camera, projected onto the ground: forward (meters ahead), right (meters to the right; negative = left), up (meters above the ground). Ground height and resting the prop's base on it are automatic.
@@ -59,21 +58,30 @@ Tools and conventions:
 - Every prop has an id. To change a scene, prefer move_prop and delete_prop over placing duplicates.
 - Put the props of a named scene in one folder (place_prop folder), named briefly in the user's language. Hidden props still exist and are saved.
 - Every place_prop and move_prop result has a "validation" report from real geometry; ok: false is a defect. overlap = intersects another prop ("with" id) by depth meters; world_collision = inside a building, wall, fence or other world object on the given side; floating / buried / overhang = base not resting on the ground; steep_ground = sloped ground; no_ground = nothing solid below. suggestedMove values are camera-relative.
-- Only call save_map or export_fivem_resource when the user asks.
+- Only call export_map when the user asks. If they want an export without naming the platform, ask which one.
+- A user message may start with an <editor-context> note from the editor (not typed by the user), e.g. that the map changed; take it into account.
 
 How to complete a building request — keep going until it is actually done, don't stop at a first draft:
 1. Write a short acceptance checklist of concrete, checkable points the result must satisfy (what props, how many, arrangement, which way they face, spacing, nothing clipping or floating). Show it to the user in one or two lines before building.
 2. Build it.
 3. Run check_props on the props of the scene and fix every problem.
 4. Call look_at_scene on those props and compare what you see against the checklist: facing arrows, spacing, whether it looks like the real thing. Fix what's wrong and look again when a fix was significant.
-5. Call request_review with the checklist and the prop ids. An independent reviewer inspects the scene without seeing your reasoning. If it fails, apply its fixes (or better ones) and request another review. You have ${MAX_REVIEW_ROUNDS} reviews per request.
-6. Finish with a brief report in the user's language: what you built, the reviewer's verdict, and anything still not right if you ran out of reviews.
+5. Call request_review with the checklist and the prop ids. An independent reviewer inspects the scene without seeing your reasoning. If it fails, apply its fixes (or better ones) and request another review. Reviews per request are limited; each result says how many remain. If request_review says reviews are turned off, do a final look_at_scene check of your own instead.
+6. Finish with a brief report in the user's language: what you built, the reviewer's verdict (if reviews are on), and anything still not right.
 Questions or small edits ("move #4 a bit left", "what's here?") don't need the checklist or a review.
 
 - If the user wants to take back an earlier request, use undo_last_change (reverts the whole previous request); redo_last_undo brings it back.
 - Reply in the user's language, briefly.`;
 
-function createTools(mapsDir: string, workDir: string, currentModel: () => string | undefined) {
+// What the tools need from the editor around them.
+export interface AgentHost {
+  workDir: string;
+  // Saves the project and exports it; name defaults to the project's.
+  exportMap(name: string | undefined, target: ExportTarget): Promise<ExportResult>;
+}
+
+function createTools(host: AgentHost) {
+  const workDir = host.workDir;
   return createSdkMcpServer({
     name: SERVER_NAME,
     version: "0.1.0",
@@ -153,19 +161,32 @@ function createTools(mapsDir: string, workDir: string, currentModel: () => strin
       ...inspectionTools(),
       tool(
         "request_review",
-        `Have an independent reviewer inspect the finished scene against your acceptance checklist and the user's original request. Returns pass/fail, the checklist judged item by item, and issues with prop ids and fixes. Limited to ${MAX_REVIEW_ROUNDS} per request.`,
+        `Have an independent reviewer inspect the finished scene against your acceptance checklist and the user's original request. Returns pass/fail, the checklist judged item by item, and issues with prop ids and fixes. The number of reviews per request is limited.`,
         {
           checklist: z.array(z.string()).min(1).describe("Concrete, checkable acceptance points"),
           ids: z.array(z.number().int()).min(1).describe("Ids of the props that make up the scene"),
         },
         async ({ checklist, ids }) => {
-          if (review.rounds >= MAX_REVIEW_ROUNDS) {
-            return errorResult(`All ${MAX_REVIEW_ROUNDS} reviews for this request are used. Stop and tell the user what is still wrong.`);
+          const { model, effort, critic } = getSettings();
+          if (!critic.enabled) {
+            return text("Independent reviews are turned off in the editor settings. Check the scene yourself with check_props and look_at_scene, then report.");
+          }
+          if (review.rounds >= critic.maxRounds) {
+            return errorResult(`All ${critic.maxRounds} reviews for this request are used. Stop and tell the user what is still wrong.`);
           }
           review.rounds++;
           try {
-            const { verdict } = await runReview({ task: review.task, checklist, ids, model: currentModel(), workDir });
-            return text({ round: review.rounds, maxRounds: MAX_REVIEW_ROUNDS, ...verdict });
+            const { verdict } = await runReview({
+              task: review.task,
+              checklist,
+              ids,
+              model: critic.model ?? process.env.MAP_EDITOR_MODEL ?? model,
+              // A critic on the builder's model follows the builder's effort unless it has its own.
+              effort: critic.effort ?? (critic.model ? undefined : effort),
+              maxTurns: critic.maxTurns,
+              workDir,
+            });
+            return text({ round: review.rounds, maxRounds: critic.maxRounds, remaining: critic.maxRounds - review.rounds, ...verdict });
           } catch (err) {
             return errorResult(err);
           }
@@ -223,7 +244,7 @@ function createTools(mapsDir: string, workDir: string, currentModel: () => strin
           try {
             if (!folder && !ids?.length) throw new Error("Pass a folder or ids");
             if (folder) await layout.setFolderHidden(folder, !visible);
-            if (ids?.length) await codewalker.setVisibility(ids, visible);
+            if (ids?.length) await layout.setPropsHidden(ids, !visible);
             return text({ folders: layout.listFolders() });
           } catch (err) {
             return errorResult(err);
@@ -243,24 +264,15 @@ function createTools(mapsDir: string, workDir: string, currentModel: () => strin
         },
       ),
       tool(
-        "save_map",
-        "Save the current map as a .ymap file in the maps folder.",
-        { name: z.string().regex(MAP_NAME_PATTERN).describe("File name without extension: lowercase letters, digits, _ or -") },
-        async ({ name }) => {
-          try {
-            return text(await saveMap(name, mapsDir));
-          } catch (err) {
-            return errorResult(err);
-          }
+        "export_map",
+        `Export the map for a platform. Targets: ${EXPORT_TARGETS.map((t) => `${t} = ${EXPORT_TARGET_INFO[t].description}`).join("; ")}. Returns where it was written and how to install it.`,
+        {
+          name: z.string().regex(MAP_NAME_PATTERN).optional().describe("Resource, package or file name: lowercase letters, digits, _ or -. Defaults to the project's name"),
+          target: z.enum(EXPORT_TARGETS).describe("Platform to export for"),
         },
-      ),
-      tool(
-        "export_fivem_resource",
-        "Save the map and write a FiveM resource folder (fxmanifest.lua + stream/<name>.ymap) ready to copy to the server.",
-        { name: z.string().regex(MAP_NAME_PATTERN).describe("Resource and file name: lowercase letters, digits, _ or -") },
-        async ({ name }) => {
+        async ({ name, target }) => {
           try {
-            return text(await exportFivemResource(name, mapsDir));
+            return text(await host.exportMap(name, target));
           } catch (err) {
             return errorResult(err);
           }
@@ -277,28 +289,28 @@ export class EditorSession {
   private wake: (() => void) | null = null;
   private closed = false;
   private q: Query | null = null;
-  private model: string | undefined;
 
   constructor(
     private readonly onMessage: (message: SDKMessage) => void,
-    private readonly options: { mapsDir: string; workDir: string; model?: string },
-  ) {
-    this.model = options.model;
-  }
+    // resume: id of a saved conversation to continue.
+    private readonly options: { host: AgentHost; model?: string; effort?: EffortLevel; resume?: string },
+  ) {}
 
   start(): Promise<void> {
     const q = query({
       prompt: this.inputStream(),
       options: {
-        model: this.model,
+        model: this.options.model,
+        effort: this.options.effort,
+        resume: this.options.resume,
         systemPrompt: SYSTEM_PROMPT,
-        cwd: this.options.workDir,
+        cwd: this.options.host.workDir,
         tools: [],
-        mcpServers: { [SERVER_NAME]: createTools(this.options.mapsDir, this.options.workDir, () => this.model) },
+        mcpServers: { [SERVER_NAME]: createTools(this.options.host) },
         allowedTools: TOOL_NAMES.map((name) => `mcp__${SERVER_NAME}__${name}`),
         permissionMode: "dontAsk",
         settingSources: [],
-        env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: "gta-map-editor/0.1.0" },
+        env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `${APP_ID}/0.1.0` },
       },
     });
     this.q = q;
@@ -329,8 +341,12 @@ export class EditorSession {
 
   // Applies to the next response; the conversation is kept. undefined = account default.
   async setModel(model: string | undefined) {
-    this.model = model;
     await this.q?.setModel(model);
+  }
+
+  // Reasoning effort for the next response. undefined = the model's default.
+  async setEffort(effort: EffortLevel | undefined) {
+    await this.q?.applyFlagSettings({ effortLevel: effort ?? null });
   }
 
   // "summary" answers from the last response's usage, so it costs no extra API calls.

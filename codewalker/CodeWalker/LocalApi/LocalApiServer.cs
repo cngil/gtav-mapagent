@@ -129,6 +129,7 @@ namespace CodeWalker.LocalApi
                     case "/camera/rotate": responseBody = RotateCamera(requestBody); break;
                     case "/camera/zoom": responseBody = ZoomMap(requestBody); break;
                     case "/camera/focus": responseBody = FocusCamera(requestBody); break;
+                    case "/camera/settings": responseBody = CameraSettings(requestBody); break;
                     case "/set_visibility": responseBody = SetVisibility(requestBody); break;
                     case "/open_map": responseBody = OpenMap(requestBody); break;
                     case "/new_map": responseBody = NewMap(requestBody); break;
@@ -591,6 +592,10 @@ namespace CodeWalker.LocalApi
                 ["heading"] = RelativeHeadingDeg(cam, WorldYaw(ent)),
                 ["facing"] = CompassName(FrontYaw(ent)),
                 ["worldHeading"] = (float)Math.Round(NormalizeDegrees(MathUtil.RadiansToDegrees(FrontYaw(ent))), 1),
+                // World orientation (x, y, z, w) and the entity's own yaw (local +Y, not the front), for exporters
+                // that spawn props by script instead of streaming the ymap.
+                ["rotation"] = new JArray(ent.Orientation.X, ent.Orientation.Y, ent.Orientation.Z, ent.Orientation.W),
+                ["yaw"] = (float)Math.Round(NormalizeDegrees(MathUtil.RadiansToDegrees(WorldYaw(ent))), 3),
                 ["distance"] = (float)Math.Round(Vector3.Distance(ent.Position, cam.Position), 2),
                 ["hidden"] = hiddenIds.Contains(GetEntityId(ent)),
                 // Position within its ymap, which is stable across save and load (used to persist folders).
@@ -1266,6 +1271,36 @@ namespace CodeWalker.LocalApi
             });
             return CameraState();
         }
+
+        // CodeWalker's defaults, which the editor's multipliers scale.
+        const float BaseCameraSensitivity = 0.005f;
+
+        // Camera feel. Body (all optional): { "moveSpeed": 1 (multiplier), "sensitivity": 1 (multiplier),
+        // "smoothing": 10, "fovDegrees": 57, "invertMouse": false }. Returns the values in effect.
+        JObject CameraSettings(JObject req)
+        {
+            return OnUiThread(() =>
+            {
+                float moveSpeed = Clamp(req["moveSpeed"]?.ToObject<float?>() ?? worldForm.CameraMoveSpeedScale, 0.1f, 5f);
+                float sensitivity = Clamp(req["sensitivity"]?.ToObject<float?>() ?? worldForm.CameraSensitivity / BaseCameraSensitivity, 0.2f, 3f);
+                float smoothing = Clamp(req["smoothing"]?.ToObject<float?>() ?? worldForm.CameraSmoothing, 1f, 30f);
+                float fovDegrees = Clamp(req["fovDegrees"]?.ToObject<float?>() ?? MathUtil.RadiansToDegrees(worldForm.CameraFieldOfView), 30f, 100f);
+                bool invert = req["invertMouse"]?.ToObject<bool?>() ?? worldForm.IsMouseInverted;
+
+                worldForm.ApplyCameraSettings(moveSpeed, sensitivity * BaseCameraSensitivity, smoothing, MathUtil.DegreesToRadians(fovDegrees), invert);
+                return new JObject
+                {
+                    ["success"] = true,
+                    ["moveSpeed"] = Round2(moveSpeed),
+                    ["sensitivity"] = Round2(sensitivity),
+                    ["smoothing"] = Round2(smoothing),
+                    ["fovDegrees"] = Round2(fovDegrees),
+                    ["invertMouse"] = invert,
+                };
+            });
+        }
+
+        static float Clamp(float value, float min, float max) => Math.Min(max, Math.Max(min, value));
 
         // 2D map zoom. Body: { "factor": 0.5 } (below 1 zooms in)
         JObject ZoomMap(JObject req)

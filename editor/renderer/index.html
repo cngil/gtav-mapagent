@@ -1,47 +1,108 @@
 <!doctype html>
-<html lang="tr">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:" />
-    <title>GTA Map Editor</title>
+    <title>GTA V Map Agent</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <!-- Icons (24px grid, stroked). Used as <svg class="icon"><use href="#i-name" /></svg>, or icon("name") from script. -->
+    <svg xmlns="http://www.w3.org/2000/svg" hidden>
+      <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" /></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+      <symbol id="i-import" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></symbol>
+      <symbol id="i-export" viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" /></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></symbol>
+      <symbol id="i-folder-plus" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M12 10v6M9 13h6" /></symbol>
+      <symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.2 10H20a2 2 0 0 1 1.9 2.5l-1.5 6A2 2 0 0 1 18.5 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.7.9l.8 1.2a2 2 0 0 0 1.7.9H18a2 2 0 0 1 2 2v2" /></symbol>
+      <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 15a2 2 0 0 1-2 2H8l-4 4V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z" /></symbol>
+      <symbol id="i-compose" viewBox="0 0 24 24"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z" /></symbol>
+      <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 17v5M9 10.8V5h6v5.8l3 3.2v3H6v-3z" /></symbol>
+      <symbol id="i-settle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="m8.5 12.5 2.5 2.5 5-5" /></symbol>
+      <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="4" rx="1" /><path d="M5 8v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M10 12h4" /></symbol>
+      <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" /></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5" /></symbol>
+      <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></symbol>
+      <symbol id="i-redo" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" /></symbol>
+      <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></symbol>
+      <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="m3 3 18 18M10.6 5.1Q11.3 5 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6A17 17 0 0 0 2 12s3.6 7 10 7a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2" /></symbol>
+      <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" /></symbol>
+      <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></symbol>
+      <symbol id="i-box" viewBox="0 0 24 24"><path d="m21 8-9-5-9 5 9 5z" /><path d="M3 8v8l9 5 9-5V8M12 13v8" /></symbol>
+      <symbol id="i-map" viewBox="0 0 24 24"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z" /><path d="M9 4v14M15 6v14" /></symbol>
+      <symbol id="i-person" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2" /><path d="M12 7v7M8 10h8M9 21l3-7 3 7" /></symbol>
+      <symbol id="i-plane" viewBox="0 0 24 24"><path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z" /></symbol>
+      <symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3z" /></symbol>
+      <symbol id="i-rotate-left" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></symbol>
+      <symbol id="i-rotate-right" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8" /><path d="M21 3v5h-5" /></symbol>
+      <symbol id="i-zoom-in" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3M11 8v6M8 11h6" /></symbol>
+      <symbol id="i-zoom-out" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3M8 11h6" /></symbol>
+      <symbol id="i-focus" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" /><circle cx="12" cy="12" r="3" /></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4" /></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7" /></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" /></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01" /></symbol>
+      <symbol id="i-spinner" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.2-8.6" /></symbol>
+      <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z" /></symbol>
+      <symbol id="i-pin-map" viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z" /><circle cx="12" cy="10" r="2.5" /></symbol>
+      <symbol id="i-move" viewBox="0 0 24 24"><path d="m5 9-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20" /></symbol>
+      <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" /></symbol>
+      <symbol id="i-list-checks" viewBox="0 0 24 24"><path d="m3 17 2 2 4-4M3 7l2 2 4-4M13 6h8M13 12h8M13 18h8" /></symbol>
+      <symbol id="i-camera" viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z" /><circle cx="12" cy="13" r="3" /></symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 12 2 2 4-4" /></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a2 2 0 0 0 3.4 0" /></symbol>
+      <symbol id="i-tool" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z" /></symbol>
+    </svg>
+
+    <!-- Shown along the top edge while a project opens (the header strip is never covered by the 3D view). -->
+    <div id="progress" hidden></div>
+    <!-- Toasts sit over the chat panel's corner: anything over the 3D view would be hidden behind it. -->
+    <div id="toasts" aria-live="polite"></div>
+
     <div id="workspace">
-      <!-- Scene: the map file and its objects -->
+      <!-- Scene: the project's map and its objects -->
       <aside id="scene-panel" class="panel">
         <header class="panel-header">
-          <div class="header-row">
-            <span class="panel-title">Sahne</span>
-            <div class="map-title">
-              <span id="map-name">Yeni harita</span>
-              <span id="unsaved" class="unsaved" hidden title="Kaydedilmemiş değişiklikler var">●</span>
-            </div>
+          <div class="map-title">
+            <span id="map-name">…</span>
+            <span id="unsaved" class="saving-dot" hidden title="Saving…"></span>
           </div>
-          <div class="header-row actions">
-            <button id="new-map" title="Boş bir haritaya başla">Yeni</button>
-            <button id="open-map" title="Kaydedilmiş bir .ymap aç">Aç</button>
-            <button id="undo" title="Geri al (Ctrl+Z)" disabled>↶</button>
-            <button id="redo" title="İleri al (Ctrl+Y)" disabled>↷</button>
-            <span class="spacer"></span>
-            <button id="export" title="Kaydet ve FiveM resource klasörü oluştur">FiveM'e aktar</button>
-          </div>
+          <button id="undo" class="icon-btn" title="Undo (Ctrl+Z)" disabled><svg class="icon"><use href="#i-undo" /></svg></button>
+          <button id="redo" class="icon-btn" title="Redo (Ctrl+Y)" disabled><svg class="icon"><use href="#i-redo" /></svg></button>
+          <button id="export" class="btn" title="Export for FiveM, alt:V, RAGE:MP, Menyoo or as JSON"><svg class="icon"><use href="#i-export" /></svg>Export</button>
         </header>
 
         <!-- novalidate: Electron doesn't reliably show the browser's validation bubble, so errors are shown in #export-status. -->
-        <form id="export-form" hidden novalidate>
-          <label for="export-name">Resource adı</label>
-          <input id="export-name" spellcheck="false" placeholder="kamp_alani" />
-          <button type="submit" id="export-submit">Aktar</button>
-          <button type="button" id="export-cancel">Kapat</button>
-          <div class="form-hint">Küçük harf, rakam, _ ve -. Aynı ad seçilirse üzerine yazılır.</div>
+        <form id="export-form" class="drawer" hidden novalidate>
+          <div class="drawer-title">Export</div>
+          <label class="field">
+            <span>Platform</span>
+            <select id="export-target"></select>
+          </label>
+          <div id="export-target-hint" class="field-hint"></div>
+          <label class="field">
+            <span>Name</span>
+            <input id="export-name" spellcheck="false" placeholder="camp_site" />
+          </label>
+          <div class="field-hint">Lowercase letters, digits, _ and -. Written to the project's exports folder; an export with the same name is overwritten.</div>
           <div id="export-status" class="form-status" hidden></div>
+          <div class="drawer-actions">
+            <button type="button" id="export-cancel" class="btn btn-ghost">Close</button>
+            <button type="submit" id="export-submit" class="btn btn-primary">Export</button>
+          </div>
         </form>
 
         <section id="props">
           <div class="section-header">
-            Objeler <span id="prop-count" class="count">0</span>
-            <button id="new-folder" class="summary-button" title="Yeni klasör">+ Klasör</button>
+            <span class="section-title">Props</span>
+            <span id="prop-count" class="badge">0</span>
+            <span class="spacer"></span>
+            <button id="new-folder" class="icon-btn" title="New folder"><svg class="icon"><use href="#i-folder-plus" /></svg></button>
           </div>
           <ul id="prop-list"></ul>
         </section>
@@ -51,71 +112,181 @@
       <div id="left">
         <!-- Camera controls sit above the viewport: nothing can be drawn over it, CodeWalker's window covers it. -->
         <div id="view-toolbar">
-          <div class="segmented" role="group" aria-label="Görünüm">
-            <button id="mode-3d" class="active" title="Serbest 3D kamera">3D</button>
-            <button id="mode-2d" title="Üstten harita görünümü">2D</button>
+          <div class="segmented" role="group" aria-label="View">
+            <button id="mode-3d" class="active" title="Free 3D camera"><svg class="icon"><use href="#i-box" /></svg>3D</button>
+            <button id="mode-2d" title="Top-down map view"><svg class="icon"><use href="#i-map" /></svg>2D</button>
           </div>
           <span class="toolbar-sep"></span>
-          <button data-preset="eye_level" class="only-3d" title="Kamerayı bulunduğun yerde göz hizasına indir">Göz hizası</button>
-          <button data-preset="bird" title="Baktığın yere 45° yukarıdan bak">Kuş bakışı</button>
-          <button data-preset="north" class="only-3d" title="Yönü kuzeye çevir">Kuzey</button>
-          <button data-rotate="90" class="only-3d" title="Baktığın noktanın etrafında 90° sola dön">⟲</button>
-          <button data-rotate="-90" class="only-3d" title="Baktığın noktanın etrafında 90° sağa dön">⟳</button>
-          <button data-zoom="0.6" class="only-2d" title="Yakınlaş" hidden>+</button>
-          <button data-zoom="1.6" class="only-2d" title="Uzaklaş" hidden>−</button>
+          <button data-preset="eye_level" class="tool-btn only-3d" title="Drop the camera to eye level where you are"><svg class="icon"><use href="#i-person" /></svg>Eye level</button>
+          <button data-preset="bird" class="tool-btn" title="Look at what you are looking at from 45° above"><svg class="icon"><use href="#i-plane" /></svg>Bird's eye</button>
+          <button data-preset="north" class="tool-btn only-3d" title="Turn to face north"><svg class="icon"><use href="#i-compass" /></svg>North</button>
+          <button data-rotate="90" class="icon-btn only-3d" title="Orbit 90° left around the point you are looking at"><svg class="icon"><use href="#i-rotate-left" /></svg></button>
+          <button data-rotate="-90" class="icon-btn only-3d" title="Orbit 90° right around the point you are looking at"><svg class="icon"><use href="#i-rotate-right" /></svg></button>
+          <button data-zoom="0.6" class="icon-btn only-2d" title="Zoom in" hidden><svg class="icon"><use href="#i-zoom-in" /></svg></button>
+          <button data-zoom="1.6" class="icon-btn only-2d" title="Zoom out" hidden><svg class="icon"><use href="#i-zoom-out" /></svg></button>
           <span class="toolbar-sep"></span>
-          <button id="focus-all" title="Haritadaki en kalabalık obje grubuna odaklan; tekrar basınca sıradaki gruba geçer">Objelere odaklan</button>
+          <button id="focus-all" class="tool-btn" title="Focus on the largest group of props; press again for the next group"><svg class="icon"><use href="#i-focus" /></svg>Focus props</button>
           <span id="camera-heading" class="toolbar-info"></span>
         </div>
         <!-- CodeWalker's window is placed exactly over this element; what is inside shows only until it arrives. -->
         <section id="viewport">
-          <div id="viewport-message">CodeWalker başlatılıyor…</div>
+          <div id="viewport-message">Starting CodeWalker…</div>
         </section>
       </div>
 
       <!-- Chat with the agent -->
       <aside id="chat-panel" class="panel">
         <header class="panel-header">
-          <div class="header-row">
-            <span class="panel-title">Asistan</span>
-            <span class="spacer"></span>
-            <button id="reset" title="Konuşma bağlamını sıfırlar, sahnedeki objeler kalır">Yeni sohbet</button>
-          </div>
+          <span id="chat-title" class="chat-title">New chat</span>
+          <button id="settle" class="btn btn-ghost" title="Mark this chat as done: it becomes read-only until you unsettle it" hidden><svg class="icon"><use href="#i-settle" /></svg>Settle</button>
+          <button id="new-chat" class="icon-btn" title="New chat in this project (Ctrl+N); the map stays"><svg class="icon"><use href="#i-compose" /></svg></button>
+          <button id="close-settings" class="btn btn-ghost" hidden><svg class="icon"><use href="#i-x" /></svg>Close</button>
+          <button id="toggle-projects" class="icon-btn" title="Show projects (Ctrl+B)"><svg class="icon"><use href="#i-sidebar" /></svg></button>
         </header>
 
-        <main id="log">
-          <div class="hint">
-            3D görünüme tıklayıp WASD ve fareyle kamerayı kurmak istediğin yere götür, sonra ne istediğini yaz.<br />
-            Örnek: <em>"Önüme bir kamp alanı kur: ortada ateş, etrafında 3 bank, arkada 2 çadır."</em>
+        <!-- Settings take the chat's place: nothing can be drawn over the 3D view. Changes save and apply immediately. -->
+        <section id="settings-view" hidden>
+          <div class="settings-group">
+            <div class="settings-group-title">Critic</div>
+            <label class="setting">
+              <span class="setting-label">Review finished scenes<small>An independent critic checks each scene against the request</small></span>
+              <input type="checkbox" class="switch" id="set-critic-enabled" />
+            </label>
+            <label class="setting">
+              <span class="setting-label">Model</span>
+              <select id="set-critic-model"></select>
+            </label>
+            <label class="setting">
+              <span class="setting-label">Reasoning</span>
+              <select id="set-critic-effort"></select>
+            </label>
+            <label class="setting" title="Each time the critic fails the scene, the agent fixes it and asks again; it stops after this many reviews">
+              <span class="setting-label">Reviews per request</span>
+              <input type="number" id="set-critic-rounds" min="1" max="10" step="1" />
+            </label>
+            <label class="setting" title="Most turns the critic may take in one review">
+              <span class="setting-label">Steps per review</span>
+              <input type="number" id="set-critic-turns" min="6" max="40" step="1" />
+            </label>
           </div>
-        </main>
+
+          <div class="settings-group">
+            <div class="settings-group-title">Scene looks</div>
+            <div class="setting-hint">Views rendered when the agent doesn't pick any. Every image costs tokens.</div>
+            <div id="set-look-views" class="view-checks"></div>
+          </div>
+
+          <div class="settings-group">
+            <div class="settings-group-title">
+              Camera
+              <button type="button" id="camera-defaults" class="btn btn-ghost btn-small">Reset</button>
+            </div>
+            <label class="setting">
+              <span class="setting-label">Move speed</span>
+              <input type="range" id="set-camera-moveSpeed" min="0.1" max="5" step="0.1" />
+              <output data-for="set-camera-moveSpeed" data-format="x"></output>
+            </label>
+            <label class="setting">
+              <span class="setting-label">Mouse sensitivity</span>
+              <input type="range" id="set-camera-sensitivity" min="0.2" max="3" step="0.1" />
+              <output data-for="set-camera-sensitivity" data-format="x"></output>
+            </label>
+            <label class="setting" title="Higher follows the mouse tightly, lower glides smoothly">
+              <span class="setting-label">Responsiveness</span>
+              <input type="range" id="set-camera-smoothing" min="1" max="30" step="1" />
+              <output data-for="set-camera-smoothing"></output>
+            </label>
+            <label class="setting">
+              <span class="setting-label">Field of view</span>
+              <input type="range" id="set-camera-fovDegrees" min="30" max="100" step="1" />
+              <output data-for="set-camera-fovDegrees" data-format="°"></output>
+            </label>
+            <label class="setting">
+              <span class="setting-label">Invert mouse</span>
+              <input type="checkbox" class="switch" id="set-camera-invertMouse" />
+            </label>
+          </div>
+
+          <div id="settings-status" class="form-status err" hidden></div>
+        </section>
+
+        <!-- Everything that was shown as a toast, newest first; also takes the chat's place. -->
+        <section id="notifications-view" hidden>
+          <div class="notif-toolbar">
+            <div id="notif-filter" class="segmented" role="group" aria-label="Show">
+              <button type="button" data-filter="all" class="active">All</button>
+              <button type="button" data-filter="problems">Problems</button>
+            </div>
+            <span class="spacer"></span>
+            <button type="button" id="notif-clear" class="btn btn-ghost btn-small">Clear all</button>
+          </div>
+          <ul id="notif-list"></ul>
+        </section>
+
+        <main id="log"></main>
+
+        <div id="settled-bar" hidden>
+          <svg class="icon"><use href="#i-archive" /></svg>
+          <span>This chat is settled and read-only.</span>
+          <button type="button" id="unsettle" class="btn">Unsettle</button>
+        </div>
 
         <form id="composer">
-          <textarea id="input" rows="3" placeholder="Ne kurmak istiyorsun?"></textarea>
-          <div class="composer-actions">
-            <span class="spacer"></span>
-            <button type="button" id="stop" disabled>Durdur</button>
-            <button type="submit" id="send">Gönder</button>
+          <div class="composer-box">
+            <textarea id="input" rows="2" placeholder="Describe what to build…"></textarea>
+            <div class="composer-actions">
+              <span class="composer-hint"><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> new line</span>
+              <span class="spacer"></span>
+              <button type="button" id="stop" class="send-btn stop" title="Stop" disabled hidden><svg class="icon"><use href="#i-stop" /></svg></button>
+              <button type="submit" id="send" class="send-btn" title="Send (Enter)"><svg class="icon"><use href="#i-send" /></svg></button>
+            </div>
           </div>
         </form>
+      </aside>
+
+      <!-- Projects and their chats. A column of its own: nothing can be drawn over the 3D view. -->
+      <aside id="projects-panel" class="panel" hidden>
+        <header class="panel-header">
+          <span class="panel-title">Projects</span>
+          <span class="spacer"></span>
+          <button id="project-import" class="icon-btn" title="Import a .ymap as a new project"><svg class="icon"><use href="#i-import" /></svg></button>
+          <button id="project-new" class="icon-btn" title="New project"><svg class="icon"><use href="#i-folder-plus" /></svg></button>
+        </header>
+        <div class="search-box">
+          <svg class="icon"><use href="#i-search" /></svg>
+          <input id="projects-search" type="search" placeholder="Search" spellcheck="false" />
+          <kbd>Ctrl K</kbd>
+        </div>
+        <ul id="project-list"></ul>
       </aside>
     </div>
 
     <footer id="status-bar">
-      <div class="status" title="Gömülü CodeWalker'ın durumu">
+      <div class="status" title="Embedded CodeWalker status">
         <span id="viewer-dot" class="dot"></span>
-        <span id="viewer-label">Başlatılıyor…</span>
+        <span id="viewer-label">Starting…</span>
       </div>
       <span id="activity" class="activity" hidden></span>
-      <span class="status-sep"></span>
       <div id="usage" class="usage" hidden></div>
       <span class="spacer"></span>
-      <label class="status-label" for="model-select">Model</label>
-      <select id="model-select" class="model-select" title="Model" disabled>
-        <option>Modeller yükleniyor…</option>
-      </select>
+      <label class="status-select" title="Model">
+        <svg class="icon"><use href="#i-sparkles" /></svg>
+        <select id="model-select" disabled>
+          <option>Loading models…</option>
+        </select>
+      </label>
+      <label class="status-select" title="Reasoning effort">
+        <select id="effort-select" disabled></select>
+      </label>
+      <button id="open-notifications" class="icon-btn notif-button" title="Notifications">
+        <svg class="icon"><use href="#i-bell" /></svg>
+        <span id="notif-badge" class="notif-badge" hidden></span>
+      </button>
+      <button id="open-settings" class="icon-btn" title="Settings"><svg class="icon"><use href="#i-settings" /></svg></button>
     </footer>
 
+    <script src="markdown.js"></script>
     <script src="renderer.js"></script>
+    <script src="projects.js"></script>
   </body>
 </html>

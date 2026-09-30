@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- App icon source. After editing, regenerate icon.png and icon.ico with `npm run icon`. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#232b3d" />
+      <stop offset="1" stop-color="#0c0f16" />
+    </linearGradient>
+    <linearGradient id="pin" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#7cadff" />
+      <stop offset="1" stop-color="#3464d8" />
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)" />
+  <rect x="8.5" y="8.5" width="239" height="239" rx="55.5" fill="none" stroke="#ffffff" stroke-opacity="0.08" />
+
+  <!-- Folded map, three panels -->
+  <path d="M34 170 L90 150 L104 214 L48 234 Z" fill="#2b8a63" />
+  <path d="M90 150 L166 170 L180 234 L104 214 Z" fill="#3fb97a" />
+  <path d="M166 170 L222 150 L236 214 L180 234 Z" fill="#2b8a63" />
+  <!-- A road across the folds -->
+  <path d="M41 206 L97 184 L172 204 L229 182" fill="none" stroke="#f0b440" stroke-width="7" stroke-linejoin="round" stroke-linecap="round" />
+
+  <!-- Pin with a shadow where it touches the map -->
+  <ellipse cx="128" cy="196" rx="20" ry="6" fill="#000000" fill-opacity="0.35" />
+  <path d="M128 194 C 116 176 78 140 78 104 A 50 50 0 1 1 178 104 C 178 140 140 176 128 194 Z" fill="url(#pin)" stroke="#0c0f16" stroke-width="4" />
+  <!-- Four-point sparkle: the agent -->
+  <path d="M128 72 C 131 92 136 97 156 100 C 136 103 131 108 128 128 C 125 108 120 103 100 100 C 120 97 125 92 128 72 Z" fill="#ffffff" />
+</svg>

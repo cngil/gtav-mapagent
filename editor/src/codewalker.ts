@@ -23,6 +23,8 @@ export interface PlacedProp {
   index: number; // position within the ymap, stable across save/load
   facing: string; // compass direction the prop's front points to
   worldHeading: number; // degrees counter-clockwise from north
+  rotation?: [number, number, number, number]; // world orientation quaternion (x, y, z, w); older CodeWalker builds omit it
+  yaw?: number; // the entity's own yaw (local +Y), degrees counter-clockwise from north
 }
 
 export const LOOK_VIEWS = ["top", "north", "east", "south", "west", "eye_level"] as const;
@@ -67,6 +69,15 @@ export interface Status {
 
 export type CameraMode = "3d" | "2d";
 export type CameraPreset = "eye_level" | "bird" | "north";
+
+// Camera feel, applied in memory only; the editor's settings are the source of truth.
+export interface CameraSettings {
+  moveSpeed: number;
+  sensitivity: number;
+  smoothing: number;
+  fovDegrees: number;
+  invertMouse: boolean;
+}
 
 export interface CameraState {
   mode: CameraMode;
@@ -202,6 +213,7 @@ export const codewalker = {
     // Without ids: the largest group of nearby props, then the next group on each call.
     focus: (ids?: number[]) =>
       post<{ focused: number; cluster: number; clusters: number }>("/camera/focus", ids ? { ids } : {}),
+    settings: (settings: CameraSettings) => post<CameraSettings>("/camera/settings", settings, 5_000),
   },
 
   saveProject: (path: string) => post<SaveResult>("/save_project", { path }),

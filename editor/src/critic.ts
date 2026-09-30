@@ -1,4 +1,5 @@
-import { createSdkMcpServer, query } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, type EffortLevel } from "@anthropic-ai/claude-agent-sdk";
+import { APP_ID } from "./app-info.js";
 import { INSPECTION_TOOL_NAMES, inspectionTools } from "./inspection.js";
 
 // An independent reviewer for a finished scene. It runs as a separate agent session that sees only
@@ -67,6 +68,8 @@ export async function runReview(options: {
   checklist: string[];
   ids?: number[];
   model?: string;
+  effort?: EffortLevel;
+  maxTurns: number;
   workDir: string;
 }): Promise<{ verdict: ReviewVerdict; costUsd: number }> {
   const scope = options.ids?.length ? `The scene consists of props ${options.ids.map((id) => `#${id}`).join(", ")}.` : "Review the props nearest the user's camera.";
@@ -84,6 +87,7 @@ export async function runReview(options: {
     prompt,
     options: {
       model: options.model,
+      effort: options.effort,
       systemPrompt: CRITIC_PROMPT,
       cwd: options.workDir,
       tools: [],
@@ -92,9 +96,9 @@ export async function runReview(options: {
       permissionMode: "dontAsk",
       settingSources: [],
       persistSession: false,
-      maxTurns: 16,
+      maxTurns: options.maxTurns,
       outputFormat: { type: "json_schema", schema: VERDICT_SCHEMA },
-      env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: "gta-map-editor-critic/0.1.0" },
+      env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `${APP_ID}-critic/0.1.0` },
     },
   });
 

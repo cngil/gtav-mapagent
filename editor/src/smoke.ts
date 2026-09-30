@@ -27,7 +27,14 @@ const session = new EditorSession(
       session.close();
     }
   },
-  { mapsDir: path.join(root, "maps"), workDir: path.join(root, "editor") },
+  {
+    host: {
+      workDir: path.join(root, "editor"),
+      exportMap: async () => {
+        throw new Error("Exporting isn't available in the smoke test.");
+      },
+    },
+  },
 );
 
 session.send(prompt);

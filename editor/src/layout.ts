@@ -29,10 +29,14 @@ class SceneLayout {
   private folders = new Map<string, { hidden: boolean }>();
   // By prop id. Entries for deleted props are kept on purpose: undo restores a prop under its old id.
   private folderOfProp = new Map<number, string>();
+  // Changed since the last save. Folder and visibility edits don't count as unsaved changes in CodeWalker,
+  // so the editor tracks them itself.
+  dirty = false;
 
   reset() {
     this.folders.clear();
     this.folderOfProp.clear();
+    this.dirty = false;
   }
 
   listFolders(): FolderInfo[] {
@@ -52,7 +56,10 @@ class SceneLayout {
   createFolder(name: string) {
     const trimmed = name.trim();
     if (!trimmed) throw new Error("Folder name is empty");
-    if (!this.folders.has(trimmed)) this.folders.set(trimmed, { hidden: false });
+    if (!this.folders.has(trimmed)) {
+      this.folders.set(trimmed, { hidden: false });
+      this.dirty = true;
+    }
     return trimmed;
   }
 
@@ -68,6 +75,7 @@ class SceneLayout {
     for (const [id, name] of this.folderOfProp) {
       if (name === from) this.folderOfProp.set(id, target);
     }
+    this.dirty = true;
   }
 
   // Props of a removed folder move to the top level and become visible again.
@@ -77,12 +85,14 @@ class SceneLayout {
     const ids = this.idsIn(name);
     this.folders.delete(name);
     for (const id of ids) this.folderOfProp.delete(id);
+    this.dirty = true;
     if (folder.hidden && ids.length) await codewalker.setVisibility(ids, true);
   }
 
   // Moves props into a folder (created if needed), or to the top level with folder = null. Props
   // take on the visibility of a hidden destination folder.
   async assign(ids: number[], folder: string | null) {
+    this.dirty = true;
     if (folder === null) {
       for (const id of ids) this.folderOfProp.delete(id);
       return;
@@ -96,8 +106,15 @@ class SceneLayout {
     const folder = this.folders.get(name);
     if (!folder) throw new Error(`No folder named '${name}'`);
     folder.hidden = hidden;
+    this.dirty = true;
     const ids = this.idsIn(name);
     if (ids.length) await codewalker.setVisibility(ids, !hidden);
+  }
+
+  // Hides or shows single props; saved with the layout.
+  async setPropsHidden(ids: number[], hidden: boolean) {
+    this.dirty = true;
+    await codewalker.setVisibility(ids, !hidden);
   }
 
   private idsIn(name: string) {
@@ -118,6 +135,7 @@ class SceneLayout {
       hiddenIndices: props.filter((p) => p.hidden && p.index >= 0).map((p) => p.index),
     };
     fs.writeFileSync(layoutPathFor(ymapPath), JSON.stringify(file, null, 2));
+    this.dirty = false;
   }
 
   // Call right after the ymap was opened, while prop indexes still match the saved file.
