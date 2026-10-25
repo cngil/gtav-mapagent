@@ -34,7 +34,8 @@ export function inspectionTools() {
       { ids: z.array(z.number().int()).optional().describe("Prop ids; omit to check the whole map") },
       async ({ ids }) => {
         try {
-          const result = await codewalker.validate(ids);
+          // timing is for the editor's log, not worth the agent's tokens.
+          const { timing: _timing, ...result } = await codewalker.validate(ids);
           return text(result.problems.length ? result : `All ${result.checked} checked props are fine.`);
         } catch (err) {
           return errorResult(err);

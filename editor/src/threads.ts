@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { deleteSession, getSessionInfo, getSessionMessages, listSessions, renameSession, type SDKSessionInfo } from "@anthropic-ai/claude-agent-sdk";
 import type { UiEvent } from "./events.js";
-import type { ProjectThreads } from "./projects.js";
+import type { ProjectThreads, StoredTurn } from "./projects.js";
 import { messageEvents } from "./transcript.js";
 
 // Chats. Each chat is an Agent SDK session, which the SDK saves on its own (under ~/.claude/projects, keyed
@@ -15,6 +15,39 @@ export interface ThreadSummary {
   updatedAt: number;
   pinned: boolean;
   settled: boolean;
+}
+
+// The start of a message, as stored with the stats of its answer.
+export const promptKey = (text: string) => text.trim().slice(0, 80);
+
+// Puts each answer's stats after it. Saved stats are matched to messages in order by how the message starts:
+// answers from before stats were kept have none, and are skipped over.
+function withTurnStats(events: UiEvent[], turns: StoredTurn[]): UiEvent[] {
+  if (!turns.length) return events;
+  const out: UiEvent[] = [];
+  let next = 0; // the first saved turn not matched yet
+  let pending: StoredTurn | null = null; // stats of the answer being replayed
+  const flush = () => {
+    if (pending) {
+      const { prompt: _prompt, ...stats } = pending;
+      out.push({ kind: "turn_stats", ...stats });
+    }
+    pending = null;
+  };
+  for (const event of events) {
+    if (event.kind === "user") {
+      flush();
+      const key = promptKey(event.text);
+      const match = turns.findIndex((t, i) => i >= next && t.prompt === key);
+      if (match >= 0) {
+        pending = turns[match];
+        next = match + 1;
+      }
+    }
+    out.push(event);
+  }
+  flush();
+  return out;
 }
 
 export class ThreadStore {
@@ -49,9 +82,11 @@ export class ThreadStore {
     return !!(await getSessionInfo(id, { dir: this.dir }).catch(() => undefined));
   }
 
-  async history(id: string): Promise<UiEvent[]> {
+  // turns: the stats saved for the chat's answers, shown after each answer as they were when it ran.
+  async history(id: string, turns: StoredTurn[] = []): Promise<UiEvent[]> {
     const messages = await getSessionMessages(id, { dir: this.dir });
-    return messages.filter((m) => !m.parent_tool_use_id).flatMap((m) => messageEvents(m.type, m.message, true));
+    const events = messages.filter((m) => !m.parent_tool_use_id).flatMap((m) => messageEvents(m.type, m.message, true));
+    return withTurnStats(events, turns);
   }
 
   async rename(id: string, title: string) {

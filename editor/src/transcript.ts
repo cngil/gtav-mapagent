@@ -1,4 +1,5 @@
-import type { UiEvent } from "./events.js";
+import type { ViewContext } from "./codewalker.js";
+import type { Attachment, UiEvent } from "./events.js";
 
 // Turns conversation messages into the events the chat UI renders. Shared by the live stream and by chat
 // history read back from a saved session, so a reopened chat looks the way it did while it ran.
@@ -9,6 +10,48 @@ const INTERRUPTED = /^\[Request interrupted by user[^\]]*\]$/;
 
 export function withEditorContext(note: string, text: string) {
   return `<editor-context>\n${note}\n</editor-context>\n\n${text}`;
+}
+
+// The note's lines about what the user pointed at in the 3D view. Replay turns them back into chips, so how
+// they begin must stay as it is.
+const SELECTION_LINE = "Selected in the 3D view: ";
+const MARKER_LINE = "Marked spot: ";
+
+const meters = (n: number) => `${Math.abs(n).toFixed(1)} m`;
+
+export function pointing(context: ViewContext | null): { lines: string[]; attachments: Attachment[] } {
+  const lines: string[] = [];
+  const attachments: Attachment[] = [];
+  if (context?.selection.length) {
+    const props = context.selection.map((p) => `#${p.id} ${p.name} (${meters(p.distance)} from the camera, facing ${p.facing})`);
+    lines.push(`${SELECTION_LINE}${props.join(", ")}. Words like "this", "these" or "it" in the message refer to them.`);
+    attachments.push(selectionAttachment(context.selection.map((p) => `#${p.id} ${p.name}`)));
+  }
+  if (context?.marker) {
+    const m = context.marker;
+    const where = `${meters(m.forward)} ${m.forward >= 0 ? "ahead of" : "behind"} and ${meters(m.right)} ${m.right >= 0 ? "right of" : "left of"} the camera`;
+    lines.push(`${MARKER_LINE}world (${m.position.map((v) => v.toFixed(1)).join(", ")}), ${where}. "Here" or "there" means this spot; place_prop with at_marker builds there.`);
+    attachments.push({ type: "marker", label: "Marked spot" });
+  }
+  return { lines, attachments };
+}
+
+function selectionAttachment(props: string[]): Attachment {
+  return { type: "selection", label: props.length === 1 ? props[0] : `${props.length} props` };
+}
+
+// The chips of a message, from its editor-context note.
+function attachmentsOf(note: string): Attachment[] {
+  const attachments: Attachment[] = [];
+  for (const line of note.split("\n")) {
+    if (line.startsWith(SELECTION_LINE)) {
+      const props = [...line.matchAll(/#(\d+) ([\w-]+) \(/g)].map((m) => `#${m[1]} ${m[2]}`);
+      if (props.length) attachments.push(selectionAttachment(props));
+    } else if (line.startsWith(MARKER_LINE)) {
+      attachments.push({ type: "marker", label: "Marked spot" });
+    }
+  }
+  return attachments;
 }
 
 function toolResultText(content: unknown): string {
@@ -56,9 +99,11 @@ export function messageEvents(type: string, message: any, includeUserText: boole
           images: toolResultImages(block.content),
         });
       } else if (includeUserText && block?.type === "text") {
-        const text = String(block.text).replace(EDITOR_CONTEXT, "").trim();
+        const raw = String(block.text);
+        const text = raw.replace(EDITOR_CONTEXT, "").trim();
+        const attachments = attachmentsOf(raw.match(EDITOR_CONTEXT)?.[0] ?? "");
         if (INTERRUPTED.test(text)) events.push({ kind: "interrupted" });
-        else if (text) events.push({ kind: "user", text });
+        else if (text) events.push(attachments.length ? { kind: "user", text, attachments } : { kind: "user", text });
       }
     }
   }

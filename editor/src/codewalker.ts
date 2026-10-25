@@ -1,3 +1,5 @@
+import fs from "node:fs";
+
 // Client for the local HTTP API added to the CodeWalker fork (CodeWalker/LocalApi/LocalApiServer.cs).
 
 const BASE_URL = process.env.CODEWALKER_API ?? "http://127.0.0.1:35873";
@@ -49,10 +51,35 @@ export interface Validation {
   note?: string;
 }
 
+// Where a placement or move spent its time (see LocalApiServer.Timing). Logged, not shown to the agent.
+export interface Timing {
+  totalMs: number;
+  uiMs: number; // in calls to CodeWalker's UI thread
+  ground?: PhaseTiming; // finding the ground to rest on
+  validation?: PhaseTiming; // the geometric check
+}
+
+export interface PhaseTiming {
+  ms: number;
+  rays: number;
+  streamTimeouts: number; // probes that gave up waiting for collision to load
+}
+
 export interface PlacementResult extends PlacedProp {
   success: true;
   grounded: boolean;
   validation?: Validation;
+  timing?: Timing;
+}
+
+// What the user points at in the 3D view: props they clicked and a spot they marked.
+export interface ViewContext {
+  version: number;
+  selection: PlacedProp[];
+  marker: { position: Vec3; distance: number; forward: number; right: number } | null;
+  markArmed: boolean; // the next click in the view marks the spot
+  markPending: boolean; // a click is being turned into a spot
+  markError: string | null; // why the last attempt to mark found no spot
 }
 
 export interface Status {
@@ -113,8 +140,34 @@ export interface SaveResult {
 
 // Ground snapping retries for a few seconds while collision streams in, so allow well beyond that.
 const DEFAULT_TIMEOUT_MS = 30_000;
+// A placement may wait for collision twice (finding the ground, then its check), up to 12 s each. The client
+// must outlast that: on a timeout the agent tries again while the first placement still lands, which
+// duplicates the prop.
+const EDIT_TIMEOUT_MS = 60_000;
+
+const LOG_LIMIT_BYTES = 2_000_000;
+let timingLog: string | null = null;
+
+// Logs placements and moves with CodeWalker's breakdown of where the time went, and any other call that was
+// slow or failed, to find out what makes some placements slow. The editor's own frequent calls are fast and
+// stay out of it.
+export function setTimingLog(file: string) {
+  timingLog = file;
+}
+
+function logTiming(path: string, ms: number, outcome: string, timing: unknown) {
+  if (!timingLog || (!timing && ms < 1000 && outcome === "ok")) return;
+  try {
+    if ((fs.statSync(timingLog, { throwIfNoEntry: false })?.size ?? 0) > LOG_LIMIT_BYTES) fs.renameSync(timingLog, `${timingLog}.old`);
+    const extra = timing ? ` ${JSON.stringify(timing)}` : "";
+    fs.appendFileSync(timingLog, `${new Date().toISOString()} ${path} ${ms}ms ${outcome}${extra}\n`);
+  } catch {
+    // Diagnostics only.
+  }
+}
 
 async function post<T>(path: string, body: object = {}, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
+  const started = Date.now();
   let res: Response;
   try {
     res = await fetch(BASE_URL + path, {
@@ -125,11 +178,13 @@ async function post<T>(path: string, body: object = {}, timeoutMs = DEFAULT_TIME
     });
   } catch (err) {
     if (err instanceof Error && err.name === "TimeoutError") {
+      logTiming(path, Date.now() - started, "timeout", null);
       throw new Error(`CodeWalker did not answer ${path} within ${timeoutMs / 1000}s`);
     }
     throw new Error(`CodeWalker is not reachable at ${BASE_URL}. Is the CodeWalker fork running?`);
   }
-  const json = (await res.json()) as T & { success?: boolean; error?: string };
+  const json = (await res.json()) as T & { success?: boolean; error?: string; timing?: unknown };
+  logTiming(path, Date.now() - started, res.ok && json.success !== false ? "ok" : "failed", json.timing);
   if (!res.ok || json.success === false) {
     throw new CodeWalkerError(json.error ?? `CodeWalker API ${path} failed with HTTP ${res.status}`, json);
   }
@@ -155,8 +210,9 @@ export const codewalker = {
         .map((entry) => entry.prop),
     ),
 
-  placeProp: (args: { model: string; forward: number; right: number; up: number; heading: number; face_id?: number }) =>
-    post<PlacementResult>("/place_entity", { ...args, group: currentGroup }),
+  // at_marker: forward/right are measured from the spot the user marked instead of from the camera.
+  placeProp: (args: { model: string; forward: number; right: number; up: number; heading: number; face_id?: number; at_marker?: boolean }) =>
+    post<PlacementResult>("/place_entity", { ...args, group: currentGroup }, EDIT_TIMEOUT_MS),
 
   moveProp: (args: {
     id: number;
@@ -168,8 +224,9 @@ export const codewalker = {
     turn?: number;
     world_heading?: number;
     face_id?: number;
+    to_marker?: boolean; // start from the marked spot instead of where the prop is
   }) =>
-    post<PlacementResult>("/move_prop", { ...args, group: currentGroup }),
+    post<PlacementResult>("/move_prop", { ...args, group: currentGroup }, EDIT_TIMEOUT_MS),
 
   deleteProp: (id: number, group = currentGroup) => post<{ id: number }>("/delete_prop", { id, group }),
 
@@ -188,7 +245,7 @@ export const codewalker = {
 
   // Only props with problems are returned. Checks every prop when ids is omitted.
   validate: (ids?: number[]) =>
-    post<{ checked: number; problems: { id: number; name: string; validation: Validation }[] }>(
+    post<{ checked: number; problems: { id: number; name: string; validation: Validation }[]; timing?: unknown }>(
       "/validate",
       ids?.length ? { ids } : {},
       120_000,
@@ -217,4 +274,14 @@ export const codewalker = {
   },
 
   saveProject: (path: string) => post<SaveResult>("/save_project", { path }),
+
+  // The selection and marked spot. With `since`, an unchanged state answers just { version, unchanged }.
+  viewContext: (since?: number) =>
+    post<ViewContext | { version: number; unchanged: true }>("/context", since === undefined ? {} : { since }, 5_000),
+
+  // Selects props in the view, as if the user had clicked them; [] clears the selection.
+  select: (ids: number[]) => post<ViewContext>("/selection", { ids }, 5_000),
+
+  // arm: the next click in the view marks the spot (false cancels); clear: removes the marked spot.
+  marker: (change: { arm?: boolean; clear?: boolean }) => post<ViewContext>("/marker", change, 5_000),
 };

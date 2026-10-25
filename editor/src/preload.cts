@@ -41,6 +41,14 @@ contextBridge.exposeInMainWorld("editor", {
     ipcRenderer.on("viewer:status", (_e, status) => callback(status));
   },
 
+  viewContext: () => ipcRenderer.invoke("view:context"),
+  onViewContext: (callback: (context: unknown) => void) => {
+    ipcRenderer.on("view:context", (_e, context) => callback(context));
+  },
+  selectProps: (ids: number[]) => ipcRenderer.invoke("view:select", ids),
+  markSpot: (arm: boolean) => ipcRenderer.invoke("view:mark", arm),
+  clearMarker: () => ipcRenderer.invoke("view:clear-marker"),
+
   mapState: () => ipcRenderer.invoke("map:state"),
   cameraMode: (mode: string) => ipcRenderer.invoke("camera:mode", mode),
   cameraPreset: (name: string) => ipcRenderer.invoke("camera:preset", name),

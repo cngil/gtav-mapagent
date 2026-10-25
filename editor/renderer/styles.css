@@ -327,6 +327,9 @@ input[type="range"] { accent-color: var(--accent); height: 16px; }
 #prop-list .is-hidden .row-actions { display: flex; }
 #prop-list .is-hidden .row-actions .icon-btn:not(.eye) { display: none; }
 #prop-list .is-hidden:hover .row-actions .icon-btn { display: inline-flex; }
+#prop-list li[data-id] { cursor: pointer; }
+#prop-list li.selected { background: var(--accent-soft); }
+#prop-list li.selected > .icon { color: var(--accent); }
 #prop-list .drop-target { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
 #prop-list .root-drop { color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; margin-top: 6px; }
 #prop-list .empty { color: var(--text-3); padding: 24px 8px; justify-content: center; text-align: center; }
@@ -352,8 +355,18 @@ input[type="range"] { accent-color: var(--accent); height: 16px; }
 .tool-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px; border: none; border-radius: var(--radius); background: transparent; color: var(--text-2); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .tool-btn .icon { width: 15px; height: 15px; }
 .tool-btn:hover { background: var(--hover); color: var(--text); }
+.tool-btn.active, .tool-btn.active:hover { background: var(--accent-soft); color: var(--accent); }
 .toolbar-sep { width: 1px; height: 18px; background: var(--border-strong); margin: 0 6px; flex-shrink: 0; }
 .toolbar-info { margin-left: auto; padding-left: 10px; color: var(--text-3); font-size: 12px; white-space: nowrap; }
+/* A narrow view keeps the buttons and drops their labels (the tooltips stay); Mark spot's label goes last,
+   since it also says when the next click marks the spot. */
+#left { container-type: inline-size; }
+@container (max-width: 900px) {
+  #view-toolbar .tool-btn .label:not(.keep), #view-toolbar .toolbar-info { display: none; }
+}
+@container (max-width: 520px) {
+  #view-toolbar .tool-btn .label { display: none; }
+}
 
 #viewport { flex: 1; min-width: 200px; position: relative; background: #07080a; display: flex; align-items: center; justify-content: center; }
 #viewport-message { color: var(--text-3); font-size: 13px; text-align: center; padding: 20px; }
@@ -426,6 +439,8 @@ main#log {
 .tool .note { color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
 .tool.warn .note { color: var(--warn); }
 .tool.err .note { color: var(--err); }
+.tool .time { color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tool .time.slow { color: var(--warn); }
 .tool-status { width: 15px; height: 15px; color: var(--text-3); }
 .tool.ok .tool-status { color: var(--ok); }
 .tool.warn .tool-status { color: var(--warn); }
@@ -466,6 +481,19 @@ main#log {
 .notice button { margin-left: 4px; }
 .error { display: flex; gap: 8px; align-items: flex-start; color: var(--err); font-size: 12px; padding: 8px 10px; background: var(--err-soft); border-radius: var(--radius); }
 .error .icon { margin-top: 1px; }
+
+.turn-stats { color: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; padding: 0 8px; margin-top: -4px; cursor: default; }
+
+/* Pills for what the user points at in the 3D view: above the input, and on sent messages. */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.composer-box > .chips { padding: 8px 10px 0; }
+.msg.user > .chips { margin-bottom: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; height: 24px; padding: 0 4px 0 8px; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface-3); color: var(--text-2); font-size: 12px; }
+.chip > .icon { width: 13px; height: 13px; color: var(--accent); flex-shrink: 0; }
+.chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 4px; }
+.chip .icon-btn.small { width: 18px; height: 18px; border-radius: 9px; margin-left: -2px; }
+.chip .icon-btn.small .icon { width: 12px; height: 12px; }
+.msg.user .chip { background: var(--surface-2); border-color: var(--border); }
 
 .thinking { display: flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 12px; padding: 2px 0; }
 .thinking .icon { width: 14px; height: 14px; color: var(--accent); }

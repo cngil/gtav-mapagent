@@ -291,7 +291,10 @@ function describeTool(name, args) {
       const side = args.right === 0 ? "" : args.right > 0 ? `, ${fmt(args.right)}m right` : `, ${fmt(-args.right)}m left`;
       const up = args.up ? `, ${fmt(args.up)}m up` : "";
       const folder = args.folder ? ` → ${args.folder}` : "";
-      return `${args.model} · ${fmt(args.forward)}m ahead${side}${up}, ${fmt(args.heading ?? 0)}°${folder}`;
+      const where = args.at_marker
+        ? `at marked spot${args.forward ? ` +${fmt(args.forward)}m` : ""}${side}`
+        : `${fmt(args.forward)}m ahead${side}`;
+      return `${args.model} · ${where}${up}, ${fmt(args.heading ?? 0)}°${folder}`;
     }
     case "check_props":
       return args.ids?.length ? args.ids.map((id) => `#${id}`).join(", ") : "whole map";
@@ -315,6 +318,7 @@ function describeTool(name, args) {
       return args.radius ? `props within ${fmt(args.radius)}m` : "all props";
     case "move_prop": {
       const parts = [];
+      if (args.to_marker) parts.push("to marked spot");
       if (args.north) parts.push(args.north > 0 ? `${fmt(args.north)}m north` : `${fmt(-args.north)}m south`);
       if (args.east) parts.push(args.east > 0 ? `${fmt(args.east)}m east` : `${fmt(-args.east)}m west`);
       if (args.forward) parts.push(args.forward > 0 ? `${fmt(args.forward)}m ahead` : `${fmt(-args.forward)}m back`);
@@ -383,13 +387,16 @@ function onToolUse({ id, name, input: args }, replay = false) {
   desc.textContent = describeTool(name, args ?? {});
   const note = document.createElement("span");
   note.className = "note";
+  const time = document.createElement("span");
+  time.className = "time";
   const status = icon(replay ? "check" : "spinner", `tool-status ${replay ? "" : "spin"}`);
-  summary.append(icon(TOOL_ICONS[name] ?? "tool", "tool-icon"), label, desc, note, status);
+  summary.append(icon(TOOL_ICONS[name] ?? "tool", "tool-icon"), label, desc, note, time, status);
   summary.title = `${label.textContent} · ${desc.textContent}`;
   const body = document.createElement("pre");
   body.textContent = JSON.stringify(args, null, 2);
   card.append(summary, body);
-  toolCards.set(id, { card, summary, body, name, note, status });
+  // Saved chats don't record when steps ran, so only live steps show how long they took.
+  toolCards.set(id, { card, summary, body, name, note, time, status, started: replay ? null : performance.now() });
   append(card);
   if (ACTIVITY[name] && !replay) {
     activeTools.set(id, ACTIVITY[name]);
@@ -472,12 +479,32 @@ function describeIssues(issues = []) {
 
 const STATUS_ICONS = { ok: "check", warn: "alert", err: "x" };
 
+// "850 ms", "4.2 s", "1 min 12 s".
+function duration(ms) {
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`;
+  const s = Math.round(ms / 1000);
+  return `${Math.floor(s / 60)} min ${s % 60} s`;
+}
+
+// Steps that wait this long usually waited for the game's collision data to load.
+const SLOW_STEP_MS = 10_000;
+
 function setToolStatus(entry, status, note) {
   entry.done = true;
   entry.card.classList.add(status);
   entry.status.replaceWith((entry.status = icon(STATUS_ICONS[status], "tool-status")));
   entry.note.textContent = note;
   if (note) entry.summary.title += ` — ${note}`;
+  if (entry.started !== null) {
+    const ms = performance.now() - entry.started;
+    entry.time.textContent = duration(ms);
+    entry.summary.title += ` · took ${duration(ms)}`;
+    if (ms >= SLOW_STEP_MS && entry.name !== "look_at_scene" && entry.name !== "request_review") {
+      entry.time.classList.add("slow");
+      entry.time.title = "Slow step: usually the 3D view was still loading this area's collision data. Timings are logged in %APPDATA%\\gtav-mapagent\\logs.";
+    }
+  }
 }
 
 // Steps still waiting for a result when a turn ends (stopped, or cut off) stop spinning.
@@ -553,15 +580,57 @@ function copyButton(text) {
   return button;
 }
 
-function addUserMessage(text) {
+const ATTACHMENT_ICONS = { selection: "box", marker: "pin-map" };
+
+// A small labelled pill; onRemove adds a remove button.
+function chip(iconName, label, title, onRemove) {
+  const el = document.createElement("span");
+  el.className = "chip";
+  const text = document.createElement("span");
+  text.className = "chip-label";
+  text.textContent = label;
+  el.append(icon(iconName), text);
+  if (title) el.title = title;
+  if (onRemove) el.appendChild(iconButton("x", "Remove", onRemove));
+  return el;
+}
+
+// What the user pointed at in the 3D view when sending (attachments: [{ type, label }]).
+function addAttachments(bubble, attachments) {
+  if (!attachments?.length) return;
+  const row = document.createElement("div");
+  row.className = "chips";
+  for (const a of attachments) row.appendChild(chip(ATTACHMENT_ICONS[a.type] ?? "box", a.label));
+  bubble.prepend(row);
+}
+
+function addUserMessage(text, attachments) {
   const el = document.createElement("div");
   el.className = "msg user";
   const body = document.createElement("div");
   body.className = "msg-body";
   body.textContent = text;
   el.append(body, copyButton(text));
+  addAttachments(el, attachments);
   append(el);
   return el;
+}
+
+// Under an answer: how long it took, its steps and its estimated cost.
+function addTurnStats(stats) {
+  const el = document.createElement("div");
+  el.className = "turn-stats";
+  const parts = [duration(stats.durationMs), `${stats.tools} step${stats.tools === 1 ? "" : "s"}`];
+  const total = stats.costUsd + stats.reviewCostUsd;
+  if (total > 0) parts.push(`≈$${total.toFixed(2)}`);
+  if (stats.stopped) parts.push("stopped");
+  el.textContent = parts.join(" · ");
+  el.title = [
+    `Answer took ${duration(stats.durationMs)} with ${stats.tools} tool steps.`,
+    `Estimated cost: $${stats.costUsd.toFixed(3)} for the agent${stats.reviewCostUsd ? ` + $${stats.reviewCostUsd.toFixed(3)} for critic reviews` : ""}.`,
+    "Estimates at API list prices; on a subscription this isn't billed separately but counts against your plan limits.",
+  ].join("\n");
+  append(el);
 }
 
 function addAssistantMessage(text) {
@@ -593,7 +662,10 @@ function handleEvent(event, replay = false) {
       onThreadStarted(event.id);
       break;
     case "user":
-      addUserMessage(event.text);
+      addUserMessage(event.text, event.attachments);
+      break;
+    case "turn_stats":
+      addTurnStats(event);
       break;
     case "interrupted":
       notice("Stopped.");
@@ -674,7 +746,8 @@ function showWelcome() {
   title.textContent = appInfo?.name ?? "";
   const hint = document.createElement("div");
   hint.className = "hint";
-  hint.textContent = "Click the 3D view and fly the camera with WASD and the mouse to where you want to build, then describe what you want.";
+  hint.textContent =
+    "Click the 3D view and fly the camera with WASD and the mouse to where you want to build, then describe what you want. Click a prop to talk about it, or use Mark spot to say where.";
   const chips = document.createElement("div");
   chips.className = "suggestions";
   for (const text of SUGGESTIONS) {
@@ -710,7 +783,7 @@ form.addEventListener("submit", (e) => {
   input.value = "";
   fitInput();
   setBusy(true);
-  window.editor.send(text).catch((err) => {
+  window.editor.send(text).then((sent) => addAttachments(bubble, sent?.attachments), (err) => {
     // Not sent: take the message back so nothing is lost.
     setBusy(false);
     bubble?.remove();
@@ -1215,6 +1288,68 @@ for (const button of document.querySelectorAll("[data-zoom]")) {
   button.addEventListener("click", () => runCamera(() => window.editor.cameraZoom(Number(button.dataset.zoom))));
 }
 
+// ---------- what the user points at in the 3D view ----------
+
+// Props the user clicked in the view and the spot they marked. Both are sent with each message (as chips
+// above the input) until removed.
+const composerContext = document.getElementById("composer-context");
+const markButton = document.getElementById("mark-spot");
+const markButtonLabel = markButton.querySelector(".label");
+let viewContext = null;
+let shownMarkError = null;
+
+// Older CodeWalker builds answer "unknown endpoint".
+function pointingFailed(err) {
+  const message = errorMessage(err);
+  toast(
+    "error",
+    "That didn't work",
+    /unknown endpoint/.test(message) ? "This CodeWalker build can't do that yet. Close the editor and start it with npm run start:all to rebuild it." : message,
+  );
+}
+
+function selectedIds() {
+  return new Set(viewContext?.selection.map((p) => p.id) ?? []);
+}
+
+function showViewContext(context) {
+  viewContext = context;
+  const chips = [];
+  const selection = context?.selection ?? [];
+  if (selection.length) {
+    const label = selection.length === 1 ? `#${selection[0].id} ${selection[0].name}` : `${selection.length} props selected`;
+    const list = selection.map((p) => `#${p.id} ${p.name}`).join("\n");
+    chips.push(
+      chip("box", label, `${list}\n\nSent with your message: "this" means ${selection.length === 1 ? "this prop" : "these props"}. Click props in the view to change it, Ctrl+click to add.`, () =>
+        window.editor.selectProps([]).catch(pointingFailed),
+      ),
+    );
+  }
+  if (context?.marker) {
+    const where = context.marker.position.map((v) => v.toFixed(1)).join(", ");
+    chips.push(
+      chip("pin-map", "Marked spot", `World position ${where}\n\nSent with your message: "here" means this spot.`, () =>
+        window.editor.clearMarker().catch(pointingFailed),
+      ),
+    );
+  }
+  composerContext.replaceChildren(...chips);
+  composerContext.hidden = chips.length === 0;
+
+  const armed = !!context?.markArmed;
+  markButton.classList.toggle("active", armed);
+  markButtonLabel.textContent = armed ? "Click the ground…" : context?.markPending ? "Finding the spot…" : context?.marker ? "Move spot" : "Mark spot";
+  if (context?.markError && context.markError !== shownMarkError) toast("warning", "No spot marked", context.markError);
+  shownMarkError = context?.markError ?? null;
+
+  const selected = selectedIds();
+  for (const row of propList.querySelectorAll("li[data-id]")) row.classList.toggle("selected", selected.has(Number(row.dataset.id)));
+}
+
+markButton.addEventListener("click", () => window.editor.markSpot(!viewContext?.markArmed).catch(pointingFailed));
+window.editor.onViewContext(showViewContext);
+window.editor.viewContext().then(showViewContext);
+
 // ---------- embedded 3D view ----------
 
 // CodeWalker's window is a native child window laid over #viewport, so it needs physical pixels.
@@ -1389,8 +1524,18 @@ function startNameEdit(container, initial, commit, replaceRow) {
 
 function propRow(prop, inFolder) {
   const li = document.createElement("li");
-  li.className = `${inFolder ? "in-folder" : ""} ${prop.hidden ? "is-hidden" : ""}`;
+  li.className = `${inFolder ? "in-folder" : ""} ${prop.hidden ? "is-hidden" : ""} ${selectedIds().has(prop.id) ? "selected" : ""}`;
+  li.dataset.id = String(prop.id);
   li.draggable = true;
+  // Selects it in the 3D view too, as a click there would; Ctrl adds or removes.
+  li.addEventListener("click", (e) => {
+    if (e.detail > 1) return; // the second click of a double-click (focus) shouldn't deselect again
+    const selected = selectedIds();
+    let ids = [prop.id];
+    if (e.ctrlKey) ids = selected.has(prop.id) ? [...selected].filter((id) => id !== prop.id) : [...selected, prop.id];
+    else if (selected.size === 1 && selected.has(prop.id)) ids = [];
+    window.editor.selectProps(ids).catch(pointingFailed);
+  });
   li.addEventListener("dragstart", (e) => e.dataTransfer.setData("application/x-prop-id", String(prop.id)));
 
   const name = document.createElement("span");
@@ -1399,7 +1544,7 @@ function propRow(prop, inFolder) {
   id.className = "prop-id";
   id.textContent = `#${prop.id}`;
   name.append(id, prop.name);
-  li.title = `${prop.name}\nPosition: ${prop.position.map((v) => v.toFixed(1)).join(", ")}\nDouble-click: focus camera · drag: move to folder`;
+  li.title = `${prop.name}\nPosition: ${prop.position.map((v) => v.toFixed(1)).join(", ")}\nClick: select · double-click: focus camera · drag: move to folder`;
   li.addEventListener("dblclick", () => runCamera(() => window.editor.cameraFocus([prop.id])));
   const meta = document.createElement("span");
   meta.className = "prop-meta";

@@ -117,15 +117,17 @@
             <button id="mode-2d" title="Top-down map view"><svg class="icon"><use href="#i-map" /></svg>2D</button>
           </div>
           <span class="toolbar-sep"></span>
-          <button data-preset="eye_level" class="tool-btn only-3d" title="Drop the camera to eye level where you are"><svg class="icon"><use href="#i-person" /></svg>Eye level</button>
-          <button data-preset="bird" class="tool-btn" title="Look at what you are looking at from 45° above"><svg class="icon"><use href="#i-plane" /></svg>Bird's eye</button>
-          <button data-preset="north" class="tool-btn only-3d" title="Turn to face north"><svg class="icon"><use href="#i-compass" /></svg>North</button>
+          <button data-preset="eye_level" class="tool-btn only-3d" title="Drop the camera to eye level where you are"><svg class="icon"><use href="#i-person" /></svg><span class="label">Eye level</span></button>
+          <button data-preset="bird" class="tool-btn" title="Look at what you are looking at from 45° above"><svg class="icon"><use href="#i-plane" /></svg><span class="label">Bird's eye</span></button>
+          <button data-preset="north" class="tool-btn only-3d" title="Turn to face north"><svg class="icon"><use href="#i-compass" /></svg><span class="label">North</span></button>
           <button data-rotate="90" class="icon-btn only-3d" title="Orbit 90° left around the point you are looking at"><svg class="icon"><use href="#i-rotate-left" /></svg></button>
           <button data-rotate="-90" class="icon-btn only-3d" title="Orbit 90° right around the point you are looking at"><svg class="icon"><use href="#i-rotate-right" /></svg></button>
           <button data-zoom="0.6" class="icon-btn only-2d" title="Zoom in" hidden><svg class="icon"><use href="#i-zoom-in" /></svg></button>
           <button data-zoom="1.6" class="icon-btn only-2d" title="Zoom out" hidden><svg class="icon"><use href="#i-zoom-out" /></svg></button>
           <span class="toolbar-sep"></span>
-          <button id="focus-all" class="tool-btn" title="Focus on the largest group of props; press again for the next group"><svg class="icon"><use href="#i-focus" /></svg>Focus props</button>
+          <button id="focus-all" class="tool-btn" title="Focus on the largest group of props; press again for the next group"><svg class="icon"><use href="#i-focus" /></svg><span class="label">Focus props</span></button>
+          <span class="toolbar-sep"></span>
+          <button id="mark-spot" class="tool-btn" title="Mark a spot to build at: click this, then click the ground in the view. Your next messages can say &quot;here&quot;."><svg class="icon"><use href="#i-pin-map" /></svg><span class="label keep">Mark spot</span></button>
           <span id="camera-heading" class="toolbar-info"></span>
         </div>
         <!-- CodeWalker's window is placed exactly over this element; what is inside shows only until it arrives. -->
@@ -233,6 +235,8 @@
 
         <form id="composer">
           <div class="composer-box">
+            <!-- What the user points at in the 3D view; sent along with the message. -->
+            <div id="composer-context" class="chips" hidden></div>
             <textarea id="input" rows="2" placeholder="Describe what to build…"></textarea>
             <div class="composer-actions">
               <span class="composer-hint"><kbd>Enter</kbd> send · <kbd>Shift Enter</kbd> new line</span>

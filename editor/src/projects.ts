@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { TurnStats } from "./events.js";
 
 // Projects. A project is one map and the chats about it, kept in a folder of its own under the maps folder:
 //
@@ -31,7 +32,15 @@ interface ProjectFile {
 export interface ThreadMeta {
   pinned?: boolean;
   settled?: boolean; // read-only until unsettled
+  turns?: StoredTurn[]; // the agent's answers, in order (saved chats don't keep these numbers themselves)
 }
+
+// prompt: the start of the message it answered, which lines it up with the chat when it is reopened.
+export interface StoredTurn extends TurnStats {
+  prompt: string;
+}
+
+const MAX_STORED_TURNS = 500;
 
 interface ThreadsFile {
   version: 1;
@@ -99,6 +108,11 @@ export class ProjectThreads {
   update(id: string, patch: ThreadMeta) {
     this.data.threads[id] = { ...this.data.threads[id], ...patch };
     this.save();
+  }
+
+  addTurn(id: string, turn: StoredTurn) {
+    const turns = [...(this.meta(id).turns ?? []), turn].slice(-MAX_STORED_TURNS);
+    this.update(id, { turns });
   }
 
   forget(id: string) {

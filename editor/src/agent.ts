@@ -19,12 +19,23 @@ import { layout } from "./layout.js";
 import { getSettings } from "./settings.js";
 
 // The request currently being worked on, as the user wrote it. The critic gets this verbatim rather than
-// the builder's paraphrase.
-const review = { task: "", rounds: 0 };
+// the builder's paraphrase. costUsd: what its reviews cost, which the conversation's own total leaves out.
+const review = { task: "", rounds: 0, costUsd: 0 };
 
 export function beginUserRequest(userText: string) {
   review.task = userText;
   review.rounds = 0;
+  review.costUsd = 0;
+}
+
+export function reviewCostUsd() {
+  return review.costUsd;
+}
+
+// Placement results without CodeWalker's timing breakdown: it is for the log, not worth the agent's tokens.
+function withoutTiming<T extends { timing?: unknown }>(result: T): Omit<T, "timing"> {
+  const { timing: _timing, ...rest } = result;
+  return rest;
 }
 
 const SERVER_NAME = "codewalker";
@@ -51,6 +62,7 @@ How space works:
 - Prefer face_id over headings whenever a prop should face another one (benches toward a fire, chairs toward a table): it turns the prop's front toward that prop exactly.
 - When fixing a scene you have looked at, use world directions: move_prop north/east (meters, negative = south/west) and world_heading (degrees counter-clockwise from north: 0 north, 90 west, 180 south, 270 east). list_props reports every prop's facing and worldHeading in the same terms. The camera-relative forward/right still work but mean the user's current camera, not the image you looked at.
 - The user may move the camera between requests; call list_props for fresh values before editing existing props.
+- The user can point at things in the 3D view. A selection ("this", "these", "it", "bunu") means the props they clicked; a marked spot ("here", "there", "buraya") is a place they marked on the ground. Both arrive in the <editor-context> note of their message. To build at the marked spot, pass at_marker: true to place_prop: forward/right are then measured from the spot (along the camera's directions) instead of from the camera, so forward 0, right 0 is the spot itself. move_prop with to_marker: true moves a prop there.
 
 Tools and conventions:
 - Never invent model names. Use search_props and only place names it returned. Search with short English keywords (bench, tent, table, chair, barrier, crate, light, fire, tree, fence). Most placeable props start with "prop_". Model names say little about size: read the bounding boxes (prop_logpile_01 is 8.4 m long).
@@ -107,18 +119,19 @@ function createTools(host: AgentHost) {
         "Place one prop relative to the camera. The prop is snapped to the ground automatically. Returns its id.",
         {
           model: z.string().describe("Exact model name returned by search_props"),
-          forward: z.number().describe("Meters ahead of the camera"),
-          right: z.number().describe("Meters to the camera's right; negative is left"),
+          forward: z.number().describe("Meters ahead of the camera (of the marked spot with at_marker)"),
+          right: z.number().describe("Meters to the camera's right; negative is left (from the marked spot with at_marker)"),
           up: z.number().optional().describe("Meters above the ground, default 0"),
           heading: z.number().optional().describe("Degrees. 0 = front faces away from camera, 180 = front faces camera, 90 = front toward camera's left"),
           face_id: z.number().int().optional().describe("Turn the prop's front toward this prop instead of using heading"),
           folder: z.string().optional().describe("Folder to put the prop in; created if missing"),
+          at_marker: z.boolean().optional().describe("Measure forward/right from the spot the user marked instead of from the camera"),
         },
-        async ({ model, forward, right, up, heading, face_id, folder }) => {
+        async ({ model, forward, right, up, heading, face_id, folder, at_marker }) => {
           try {
-            const placed = await codewalker.placeProp({ model, forward, right, up: up ?? 0, heading: heading ?? 0, face_id });
+            const placed = await codewalker.placeProp({ model, forward, right, up: up ?? 0, heading: heading ?? 0, face_id, at_marker });
             if (folder) await layout.assign([placed.id], folder);
-            return text({ ...placed, folder: layout.folderOf(placed.id) });
+            return text({ ...withoutTiming(placed), folder: layout.folderOf(placed.id) });
           } catch (err) {
             return errorResult(err);
           }
@@ -126,7 +139,7 @@ function createTools(host: AgentHost) {
       ),
       tool(
         "move_prop",
-        "Move and/or turn a placed prop. Offsets can be world directions (north/east) or relative to the user's camera (forward/right); they add up. Without up it is re-snapped to the ground at the new spot.",
+        "Move and/or turn a placed prop. Offsets can be world directions (north/east) or relative to the user's camera (forward/right); they add up. Without up it is re-snapped to the ground at the new spot. With to_marker the offsets start from the spot the user marked.",
         {
           id: z.number().int().describe("Prop id from place_prop or list_props"),
           north: z.number().optional().describe("Meters north (negative = south)"),
@@ -137,10 +150,11 @@ function createTools(host: AgentHost) {
           face_id: z.number().int().optional().describe("Turn the prop's front toward this prop"),
           world_heading: z.number().optional().describe("Absolute direction for the prop's front, degrees counter-clockwise from north (0 N, 90 W, 180 S, 270 E)"),
           turn: z.number().optional().describe("Degrees to rotate on top of the above; positive = counter-clockwise seen from above"),
+          to_marker: z.boolean().optional().describe("Move to the spot the user marked (plus any offsets), resting on the ground there; up then lifts it"),
         },
         async (args) => {
           try {
-            return text(await codewalker.moveProp(args));
+            return text(withoutTiming(await codewalker.moveProp(args)));
           } catch (err) {
             return errorResult(err);
           }
@@ -176,7 +190,7 @@ function createTools(host: AgentHost) {
           }
           review.rounds++;
           try {
-            const { verdict } = await runReview({
+            const { verdict, costUsd } = await runReview({
               task: review.task,
               checklist,
               ids,
@@ -186,6 +200,7 @@ function createTools(host: AgentHost) {
               maxTurns: critic.maxTurns,
               workDir,
             });
+            review.costUsd += costUsd;
             return text({ round: review.rounds, maxRounds: critic.maxRounds, remaining: critic.maxRounds - review.rounds, ...verdict });
           } catch (err) {
             return errorResult(err);

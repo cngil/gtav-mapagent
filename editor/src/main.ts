@@ -4,16 +4,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { beginUserRequest, EditorSession, type AgentHost } from "./agent.js";
+import { beginUserRequest, EditorSession, reviewCostUsd, type AgentHost } from "./agent.js";
 import { APP_ID, APP_NAME } from "./app-info.js";
-import { codewalker, CodeWalkerError, setHistoryGroup } from "./codewalker.js";
+import { codewalker, CodeWalkerError, setHistoryGroup, setTimingLog, type ViewContext } from "./codewalker.js";
 import { EXPORT_TARGET_INFO, EXPORT_TARGETS, exportMap, type ExportTarget } from "./export.js";
 import { layout } from "./layout.js";
 import type { UiEvent, ViewerStatus } from "./events.js";
 import { ProjectStore, type ProjectInfo } from "./projects.js";
 import { getSettings, loadSettings, updateSettings, type SettingsPatch } from "./settings.js";
-import { ThreadStore } from "./threads.js";
-import { messageEvents, withEditorContext } from "./transcript.js";
+import { promptKey, ThreadStore } from "./threads.js";
+import { messageEvents, pointing, withEditorContext } from "./transcript.js";
 
 // Identity first: the user data folder must be settled before anything reads it. It is keyed by APP_ID, so
 // renaming the app keeps its settings and chats.
@@ -48,6 +48,10 @@ let busy = false; // the agent is answering; the scene is shared, so chats and p
 let sessionFirstMessage = false; // the next message is the conversation's first since it was started or reopened
 let sessionResumed = false; // the conversation was reopened from history
 let stopRequested = false; // the user pressed Stop during this turn
+// The answer being worked on: when it started, the message it answers and how many tool steps it took.
+let turn: { startedAt: number; prompt: string; tools: number } | null = null;
+let sessionCostUsd = 0; // the conversation's running cost estimate at the end of its last answer
+let viewContext: ViewContext | null = null; // what the user points at in the 3D view
 
 function emit(event: UiEvent) {
   window?.webContents.send("agent:event", event);
@@ -158,6 +162,7 @@ async function launchViewer(win: BrowserWindow) {
     lastState = next.state;
     if (codewalkerProcess === child) setViewer(next);
     if (becameReady) {
+      viewContext = null; // a restarted CodeWalker counts versions from zero again
       pushCameraSettings().catch((err: unknown) => notify("warning", "Camera settings not applied", errorText(err), "camera-settings"));
       loadProjectMap().catch((err: unknown) => notify("error", "The project's map couldn't be loaded", errorText(err), "map-load"));
     } else if (next.state === "ready" && (!busy || Date.now() - lastSaveAt > 30_000)) {
@@ -201,6 +206,34 @@ ipcMain.handle("props:list", async () => {
 ipcMain.handle("props:delete", async (_event, id: number) => {
   await codewalker.deleteProp(id, `ui-${Date.now()}`);
 });
+
+// ---------- what the user points at in the 3D view ----------
+
+function showViewContext(next: ViewContext) {
+  viewContext = next;
+  window?.webContents.send("view:context", next);
+}
+
+// Clicks in the 3D view happen in CodeWalker, which can't call the editor, so it is asked often. The question
+// is cheap: CodeWalker answers "unchanged" without waiting for its UI thread.
+let pollingView = false;
+setInterval(async () => {
+  if (pollingView || viewer.state !== "ready" || viewerHidden) return;
+  pollingView = true;
+  try {
+    const answer = await codewalker.viewContext(viewContext?.version);
+    if (!("unchanged" in answer)) showViewContext(answer);
+  } catch {
+    // CodeWalker busy or restarting; the next round asks again.
+  } finally {
+    pollingView = false;
+  }
+}, 400);
+
+ipcMain.handle("view:context", () => viewContext);
+ipcMain.handle("view:select", async (_event, ids: number[]) => showViewContext(await codewalker.select(ids)));
+ipcMain.handle("view:mark", async (_event, arm: boolean) => showViewContext(await codewalker.marker({ arm })));
+ipcMain.handle("view:clear-marker", async () => showViewContext(await codewalker.marker({ clear: true })));
 
 // ---------- the project's map ----------
 
@@ -314,7 +347,10 @@ function forward(message: SDKMessage) {
   switch (message.type) {
     case "assistant":
     case "user":
-      for (const event of messageEvents(message.type, message.message, false)) emit(event);
+      for (const event of messageEvents(message.type, message.message, false)) {
+        if (event.kind === "tool_use" && turn) turn.tools++;
+        emit(event);
+      }
       break;
     case "system":
       if (message.subtype === "init") {
@@ -369,10 +405,29 @@ function forward(message: SDKMessage) {
         ok,
         error: stopRequested ? undefined : message.subtype === "success" ? (message.is_error ? message.result : undefined) : message.errors.join("\n") || message.subtype,
       });
+      recordTurn(message.total_cost_usd);
       stopRequested = false;
       break;
     }
   }
+}
+
+// Shows how long the answer took and what it cost, and keeps that with the chat for when it is reopened.
+// totalCostUsd is the conversation's running total, so the answer's cost is what it added.
+function recordTurn(totalCostUsd: number) {
+  const t = turn;
+  turn = null;
+  if (!t) return;
+  const stats = {
+    durationMs: Date.now() - t.startedAt,
+    tools: t.tools,
+    costUsd: Math.max(0, totalCostUsd - sessionCostUsd), // a crashed answer may report zero
+    reviewCostUsd: reviewCostUsd(),
+    stopped: stopRequested,
+  };
+  sessionCostUsd = Math.max(sessionCostUsd, totalCostUsd);
+  emit({ kind: "turn_stats", ...stats });
+  if (project && threadId) projects.threads(project).addTurn(threadId, { prompt: t.prompt, ...stats });
 }
 
 async function emitContextUsage() {
@@ -393,6 +448,7 @@ function ensureSession(): EditorSession {
   session = created;
   sessionFirstMessage = true;
   sessionResumed = !!resume;
+  sessionCostUsd = 0; // the running cost starts over with each conversation, a resumed one too
   created.start().catch((err: unknown) => {
     if (session !== created) return; // replaced by another chat meanwhile
     busy = false;
@@ -407,9 +463,16 @@ function closeSession() {
   session = null;
 }
 
-// A note for the agent at the start of a conversation (new or reopened): which project it is in and what the
-// map holds now. Reopened chats are also warned that the scene may have moved on without them.
-async function editorContext(): Promise<string | null> {
+// A note for the agent with a message: what the user points at in the 3D view (`pointed`), and at the start of
+// a conversation (new or reopened) which project it is in and what the map holds now.
+async function editorContext(pointed: string[]): Promise<string | null> {
+  const opening = await openingContext();
+  const parts = [...(opening ? [opening] : []), ...pointed];
+  return parts.length ? parts.join("\n") : null;
+}
+
+// Reopened chats are also warned that the scene may have moved on without them.
+async function openingContext(): Promise<string | null> {
   if (!sessionFirstMessage) return null;
   sessionFirstMessage = false;
   const parts: string[] = [];
@@ -441,10 +504,16 @@ ipcMain.handle("agent:send", async (_event, text: string) => {
     setHistoryGroup(`turn-${Date.now()}`);
     beginUserRequest(text);
     ensureSession();
-    const note = await editorContext();
+    // Asked fresh: the directions to the marked spot change as the camera moves.
+    const fresh = await codewalker.viewContext().catch(() => null);
+    const pointed = pointing(fresh && !("unchanged" in fresh) ? fresh : viewContext);
+    const note = await editorContext(pointed.lines);
+    turn = { startedAt: Date.now(), prompt: promptKey(text), tools: 0 };
     session!.send(note ? withEditorContext(note, text) : text);
+    return { attachments: pointed.attachments };
   } catch (err) {
     busy = false;
+    turn = null;
     throw err;
   }
 });
@@ -521,7 +590,7 @@ async function openState() {
   return {
     project: { id: p.id, name: p.name, slug: p.slug, propCount },
     thread: summary,
-    events: threadId ? await chats.history(threadId) : [],
+    events: threadId ? await chats.history(threadId, threads.meta(threadId).turns) : [],
   };
 }
 
@@ -708,6 +777,8 @@ async function openStartProject() {
 
 app.whenReady().then(async () => {
   loadSettings(path.join(userDataDir, "settings.json"));
+  fs.mkdirSync(path.join(userDataDir, "logs"), { recursive: true });
+  setTimingLog(path.join(userDataDir, "logs", "api-timing.log"));
   await openStartProject();
 
   window = new BrowserWindow({
