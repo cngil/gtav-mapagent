@@ -20,6 +20,7 @@ GTA V Map Agent is a free, open-source AI map editor for GTA V on Windows. Fly t
 ## Features
 
 - **Chat-driven building**: describe what you want where the camera is; ask for changes ("move the tents 2 m back", "make it look like a riot aftermath").
+- **Point instead of describing**: click a prop in the 3D view and say "make this bigger" or "turn these toward the fire"; use *Mark spot* and say "put a tent here".
 - **Real GTA V world**: the 3D view is [CodeWalker](https://github.com/dexyfex/CodeWalker) rendering your own game files, embedded in the app.
 - **Self-checking agent**: geometric validation after every placement (overlaps, clipping into buildings, floating, buried, steep ground), annotated screenshots from several viewpoints, and an **independent AI critic** that passes or fails the scene against your request.
 - **Projects and chats**: every map is a project with its own chats, saved automatically. Reopen a chat days later and continue where you left off; *settle* finished ones so they stay read-only.
@@ -72,7 +73,9 @@ Exports are written to the project folder (`maps/<project>/exports/<platform>/`)
 
 - **Projects** (right sidebar, `Ctrl+B`; `Ctrl+K` searches): projects with their chats. Clicking a project folds it; it opens when you click one of its chats, start a new chat in it or double-click it. *⤓* imports an existing `.ymap` as a new project. The last project and chat reopen on start.
 - **Chats**: automatic titles; pin, rename, delete. *Settle* marks a chat as done (read-only) until you unsettle it. `Ctrl+N` starts a new chat in the open project; the map stays.
-- **Scene panel**: props grouped in folders (drag to move, double-click to rename), show/hide (editor only; hidden props are still saved), delete, undo/redo (`Ctrl+Z` / `Ctrl+Y`; one agent request is one undo step). Double-click a prop to focus the camera on it.
+- **Pointing**: click a prop in the 3D view (or its row in the scene panel) to select it, `Ctrl`+click to add more. *Mark spot* above the view, then a click on the ground, marks where to build. Both show as chips above the message box and go along with every message until you remove them.
+- **Each answer** ends with how long it took, how many steps it made and its estimated cost; slow steps show their time in amber.
+- **Scene panel**: props grouped in folders (drag to move, double-click to rename), show/hide (editor only; hidden props are still saved), delete, undo/redo (`Ctrl+Z` / `Ctrl+Y`; one agent request is one undo step). Click a prop to select it; double-click to focus the camera on it.
 - **Saving** is automatic: a few seconds after a change, every 30 seconds while the agent works, and when the app closes.
 - **Notifications** appear as toasts; the bell in the status bar keeps the history.
 - **Status bar**: CodeWalker state, token usage and plan limits, model and reasoning effort.

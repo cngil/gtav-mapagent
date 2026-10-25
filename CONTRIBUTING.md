@@ -61,8 +61,13 @@ CodeWalker listens on `127.0.0.1:35873` only. Endpoints take and return JSON ove
 - Checks and sight: `/validate`, `/look`
 - History and files: `/undo`, `/redo`, `/new_map`, `/open_map`, `/save_project`
 - Camera and embedding: `/get_camera_view`, `/camera/mode`, `/camera/preset`, `/camera/rotate`, `/camera/zoom`, `/camera/focus`, `/camera/settings`, `/embed/bounds`, `/embed/release_focus`
+- What the user points at: `/context` (selection and marked spot; `{ "since": version }` answers `unchanged` cheaply, the editor polls it), `/selection`, `/marker`
 
-Conventions: positions for placing are relative to the camera (`forward`, `right`, `up`) or world-aligned for moves (`north`, `east`); `worldHeading` is degrees counter-clockwise from north; a prop's front is its local −Y. `list_props` also reports each prop's world `rotation` quaternion and `yaw`.
+Conventions: positions for placing are relative to the camera (`forward`, `right`, `up`), or to the spot the user marked with `at_marker` / `to_marker`, or world-aligned for moves (`north`, `east`); `worldHeading` is degrees counter-clockwise from north; a prop's front is its local −Y. `list_props` also reports each prop's world `rotation` quaternion and `yaw`.
+
+Embedded, a click in the view (not a drag) selects a prop of the map, Ctrl+click adds one, and after `/marker { "arm": true }` the next click marks a spot. CodeWalker's own editing (gizmo, Delete key) is off there: map changes go through the API so they land in its undo history.
+
+Placements wait for the game's collision data to stream in, within one budget per request (`StreamWait`). `place_entity`, `move_prop` and `validate` return a `timing` breakdown; the editor strips it before the agent sees it and writes it, with any call that took over a second, to `%APPDATA%\gtav-mapagent\logs\api-timing.log`.
 
 ## Adding an export platform
 
