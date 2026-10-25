@@ -182,6 +182,9 @@ namespace CodeWalker
 
         public static IntPtr EmbedParent = IntPtr.Zero;
         public bool IsEmbedded { get { return EmbedParent != IntPtr.Zero; } }
+        // The host's selection and hover boxes and its marked spot; hidden while the host captures frames.
+        public volatile bool HideHostOverlays;
+        MapMarker hostMarker;
         public bool IsWorldLoaded { get { return initialised; } }
         System.Windows.Forms.Timer embedParentWatch;
 
@@ -1204,7 +1207,7 @@ namespace CodeWalker
         {
             //immediately render the bounding box of the currently moused entity.
 
-            if (!MouseSelectEnabled)
+            if (!MouseSelectEnabled || HideHostOverlays)
             { return; }
 
             PrevMouseHit = LastMouseHit;
@@ -1322,6 +1325,7 @@ namespace CodeWalker
 
         private void RenderSelection()
         {
+            if (HideHostOverlays) return;
             if (SelectedItem.MultipleSelectionItems != null)
             {
                 for (int i = 0; i < SelectedItem.MultipleSelectionItems.Length; i++)
@@ -1714,7 +1718,7 @@ namespace CodeWalker
                 }
 
                 MarkerBatch.Clear();
-                MarkerBatch.AddRange(SortedMarkers);
+                if (!HideHostOverlays) MarkerBatch.AddRange(SortedMarkers);
             }
 
             Renderer.RenderMarkers(MarkerBatch);
@@ -2458,6 +2462,10 @@ namespace CodeWalker
         private void UpdateMouseHits(DrawableBase drawable, Archetype arche, YmapEntityDef entity)
         {
             //if ((SelectionMode == MapSelectionMode.Entity) && !MouseSelectEnabled) return; //performance improvement when not selecting entities...
+
+            // Embedded, only the host's map can be pointed at: the terrain and buildings under every prop would
+            // otherwise light up and be picked.
+            if (IsEmbedded && (localApiServer == null || !localApiServer.IsHostEntity(entity))) return;
 
             //test the selected entity/archetype for mouse hit.
             
@@ -3694,6 +3702,12 @@ namespace CodeWalker
 
             if (!MouseSelectEnabled)
             { return; }
+
+            if (IsEmbedded)
+            {
+                EmbeddedClick(); // right-click selects like a left click
+                return;
+            }
 
             SelectItem(LastMouseHit, Input.CtrlPressed, true);
         }
@@ -6182,6 +6196,12 @@ namespace CodeWalker
 
             LocalApi.EmbedHost.Attach(Handle, EmbedParent);
 
+            // Clicking selects the host map's props (see EmbeddedClick). CodeWalker's own editing stays off: the
+            // gizmo would change the map outside the host's undo history, and on a game entity it asks about
+            // adding it to the project in a dialog nobody can see.
+            SetMouseSelect(true);
+            ShowWidget = false;
+
             MouseDown += (s, e) => LocalApi.EmbedHost.Focus(Handle);
 
             // A child window never gets Deactivate, so release held movement keys on focus loss.
@@ -6322,6 +6342,29 @@ namespace CodeWalker
             return ProjectForm;
         }
 
+        // The pin for the spot the host's user marked; null removes it.
+        public void SetHostMarker(Vector3? position)
+        {
+            lock (markersyncroot)
+            {
+                if (hostMarker != null) Markers.Remove(hostMarker);
+                hostMarker = null;
+                if (!position.HasValue) return;
+                hostMarker = new MapMarker { Icon = Icons[0], WorldPos = position.Value, Name = "Marked spot" };
+                Markers.Add(hostMarker);
+            }
+        }
+
+        // Embedded: a click in the view (not a drag) selects one of the host map's props, or marks a spot when
+        // the host asked for that.
+        private void EmbeddedClick()
+        {
+            if (localApiServer == null) return;
+            var cursorRay = new Ray(camera.MouseRay.Position + camera.Position, camera.MouseRay.Direction);
+            // Hover only finds the host map's props when embedded (UpdateMouseHits).
+            localApiServer.OnViewClicked(LastMouseHit.EntityDef, cursorRay, MapViewEnabled, (ModifierKeys & Keys.Control) > 0);
+        }
+
         private void WorldForm_FormClosing(object sender, FormClosingEventArgs e)
         {
             localApiServer?.Stop();
@@ -6400,7 +6443,7 @@ namespace CodeWalker
                                 GrabbedWidget = null;
                             }
 
-                            if (Input.CtrlPressed)
+                            if (Input.CtrlPressed && !IsEmbedded) // embedded, Ctrl+click adds to the selection
                             {
                                 SpawnTestEntity();
                             }
@@ -6460,6 +6503,11 @@ namespace CodeWalker
                     //was clicked. but not on a marker... deselect and hide the panel
                     SelectedMarker = null;
                     HideMarkerSelectionInfo();
+                }
+                // A few pixels of wobble still count as a click rather than turning the camera.
+                if (IsEmbedded && Math.Abs(e.X - MouseDownPoint.X) <= 3 && Math.Abs(e.Y - MouseDownPoint.Y) <= 3)
+                {
+                    EmbeddedClick();
                 }
                 ControlBrushTimer = 0;
             }
@@ -6550,7 +6598,8 @@ namespace CodeWalker
 
 
 
-            MousedMarker = FindMousedMarker();
+            // Embedded, the only marker is the host's marked spot, which is not clickable.
+            MousedMarker = IsEmbedded ? null : FindMousedMarker();
 
             if (Cursor != Cursors.WaitCursor)
             {
@@ -6700,7 +6749,7 @@ namespace CodeWalker
                         if (Widget.Mode == WidgetMode.Scale) ToggleWidgetSpace();
                         else SetWidgetMode("Scale");
                     }
-                    if (k == kb.ToggleMouseSelect)
+                    if (k == kb.ToggleMouseSelect && !IsEmbedded) // embedded, clicking always selects
                     {
                         SetMouseSelect(!MouseSelectEnabled);
                     }
@@ -6712,7 +6761,7 @@ namespace CodeWalker
                     {
                         SetControlMode((ControlMode == WorldControlMode.Free) ? WorldControlMode.Ped : WorldControlMode.Free);
                     }
-                    if (k == Keys.Delete)
+                    if (k == Keys.Delete && !IsEmbedded) // embedded, deleting goes through the host's undo history
                     {
                         DeleteItem();
                     }

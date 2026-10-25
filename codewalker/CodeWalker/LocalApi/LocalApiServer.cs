@@ -50,6 +50,28 @@ namespace CodeWalker.LocalApi
         readonly HashSet<int> hiddenIds = new HashSet<int>();
         volatile YmapEntityDef[] hiddenSnapshot = new YmapEntityDef[0];
 
+        // What the user picked in the 3D view (a click selects a prop, Ctrl+click adds or removes one). Kept
+        // apart from CodeWalker's own selection, which jumps to every entity the project window touches (each
+        // placement), and re-applied after edits so the highlight matches it. UI thread only.
+        readonly List<int> userSelection = new List<int>();
+
+        // A spot the user marked in the view ("build here"). markArmed: the next click marks it. UI thread only.
+        Vector3? marker;
+        bool markArmed;
+        bool markPending; // a click is being turned into a spot (collision may still be loading)
+        string markError; // why the last attempt found no spot
+        int mapGeneration; // counts map changes, so a click answered after one doesn't mark the new map
+
+        // Bumped whenever the selection or the marker changes, so the host can poll /context cheaply.
+        volatile int contextVersion;
+
+        // The project's ymaps, for the render thread's hover test (IsHostEntity). Replaced, never mutated.
+        volatile YmapFile[] hostYmaps = new YmapFile[0];
+
+        // Time this request spent in calls to the UI thread (waiting for it, then running there), for timing
+        // reports. Each request runs on its own thread.
+        [ThreadStatic] static long uiWaitMs;
+
         public LocalApiServer(WorldForm worldForm)
         {
             this.worldForm = worldForm;
@@ -92,6 +114,7 @@ namespace CodeWalker.LocalApi
         {
             JObject responseBody;
             int statusCode = 200;
+            uiWaitMs = 0;
             try
             {
                 JObject requestBody = new JObject();
@@ -133,6 +156,9 @@ namespace CodeWalker.LocalApi
                     case "/set_visibility": responseBody = SetVisibility(requestBody); break;
                     case "/open_map": responseBody = OpenMap(requestBody); break;
                     case "/new_map": responseBody = NewMap(requestBody); break;
+                    case "/context": responseBody = GetContext(requestBody); break;
+                    case "/selection": responseBody = SetSelection(requestBody); break;
+                    case "/marker": responseBody = SetMarker(requestBody); break;
                     default:
                         statusCode = 404;
                         responseBody = new JObject { ["error"] = "unknown endpoint" };
@@ -174,7 +200,15 @@ namespace CodeWalker.LocalApi
         {
             if (worldForm.InvokeRequired)
             {
-                return (T)worldForm.Invoke(action);
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    return (T)worldForm.Invoke(action);
+                }
+                finally
+                {
+                    uiWaitMs += watch.ElapsedMilliseconds;
+                }
             }
             return action();
         }
@@ -277,19 +311,49 @@ namespace CodeWalker.LocalApi
             return Quaternion.Invert(Quaternion.RotationAxis(Vector3.UnitZ, yaw));
         }
 
-        // Must NOT be called on the UI thread: collision (.ybn) streams in lazily, so the first ray
-        // into an area often reports TestComplete=false and misses. Retry while the loader catches up.
-        bool TrySnapToGround(float x, float y, float fromZ, YmapEntityDef ignore, out float groundZ)
+        // How long one request may wait for collision to stream in, shared by all of its ground probes. With a
+        // limit per probe, one unloaded area cost minutes: a placement probes up to ten points and its check four
+        // more, and each could wait the full time. Also counts what happened, for the timing report.
+        class StreamWait
         {
+            readonly System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+            readonly int limitMs;
+            public int Rays, TimedOut;
+
+            public StreamWait(int limitMs = StreamingTimeoutMs)
+            {
+                this.limitMs = limitMs;
+            }
+
+            public long ElapsedMs => watch.ElapsedMilliseconds;
+            public bool Expired => watch.ElapsedMilliseconds >= limitMs;
+
+            // Ends the phase this budget was for, so the report shows how long the phase took.
+            public StreamWait Stop()
+            {
+                watch.Stop();
+                return this;
+            }
+
+            public JObject Report() => new JObject { ["ms"] = ElapsedMs, ["rays"] = Rays, ["streamTimeouts"] = TimedOut };
+        }
+
+        // Must NOT be called on the UI thread: collision (.ybn) streams in lazily, so the first ray
+        // into an area often reports TestComplete=false and misses. Retry while the loader catches up,
+        // within the request's budget.
+        bool TrySnapToGround(float x, float y, float fromZ, YmapEntityDef ignore, out float groundZ, StreamWait wait = null)
+        {
+            wait = wait ?? new StreamWait();
+            wait.Rays++;
             groundZ = 0;
             // TestComplete isn't trustworthy right after the camera moves: until the space has indexed
             // the area there are no bounds to test, so a miss reports "complete". Require a few
-            // consecutive complete misses before concluding there is no ground.
+            // consecutive complete misses, and the request to have given streaming a few seconds, before
+            // concluding there is no ground.
             int completeMisses = 0;
             // Collision files only get queued for loading while the loader's queue is short, so right after
             // the camera jumps (opening a map, looking at a scene) loading can take several seconds.
-            var waited = System.Diagnostics.Stopwatch.StartNew();
-            while (waited.ElapsedMilliseconds < StreamingTimeoutMs)
+            while (true)
             {
                 var ray = new Ray(new Vector3(x, y, fromZ), new Vector3(0, 0, -1));
                 for (int skip = 0; skip < 5; skip++)
@@ -305,28 +369,33 @@ namespace CodeWalker.LocalApi
                         groundZ = hit.Position.Z;
                         return true;
                     }
-                    if (hit.TestComplete && ++completeMisses >= 8 && waited.ElapsedMilliseconds >= 3000) return false;
+                    if (hit.TestComplete && ++completeMisses >= 8 && wait.ElapsedMs >= 3000) return false;
                     break;
+                }
+                if (wait.Expired)
+                {
+                    wait.TimedOut++;
+                    return false;
                 }
                 Thread.Sleep(100);
             }
-            return false;
         }
 
         // Looks for the surface under (x, y), starting just above `referenceZ` so that bridges, awnings or
         // tree canopies overhead aren't mistaken for the ground; if that finds nothing (e.g. the spot is
         // uphill, above the start), searches again from high up. Worker thread only.
-        bool TrySnapToSurfaceBelow(float x, float y, float referenceZ, YmapEntityDef ignore, out float groundZ)
+        bool TrySnapToSurfaceBelow(float x, float y, float referenceZ, YmapEntityDef ignore, out float groundZ, StreamWait wait = null)
         {
-            return TrySnapToGround(x, y, referenceZ + 5f, ignore, out groundZ)
-                || TrySnapToGround(x, y, referenceZ + 100f, ignore, out groundZ);
+            wait = wait ?? new StreamWait();
+            return TrySnapToGround(x, y, referenceZ + 5f, ignore, out groundZ, wait)
+                || TrySnapToGround(x, y, referenceZ + 100f, ignore, out groundZ, wait);
         }
 
         // Finds the height a prop's base should rest at, sampling the ground under the centre and the four
         // corners of its footprint: a single ray can slip through a gap in the collision mesh (a pier,
         // a grate) or land on a spot unrepresentative of the whole base. Nearly level ground: rest on the
         // highest sample so nothing sinks. Sloped ground: rest on the average. Worker thread only.
-        bool TryFindSupport(Vector3 center, float yaw, Archetype arch, Vector3 scale, float referenceZ, YmapEntityDef ignore, out float supportZ)
+        bool TryFindSupport(Vector3 center, float yaw, Archetype arch, Vector3 scale, float referenceZ, YmapEntityDef ignore, out float supportZ, StreamWait wait)
         {
             supportZ = 0;
             var rotation = Quaternion.RotationAxis(Vector3.UnitZ, yaw);
@@ -344,7 +413,7 @@ namespace CodeWalker.LocalApi
             var heights = new List<float>();
             foreach (var point in points)
             {
-                if (TrySnapToSurfaceBelow(point.X, point.Y, referenceZ, ignore, out float z)) heights.Add(z);
+                if (TrySnapToSurfaceBelow(point.X, point.Y, referenceZ, ignore, out float z, wait)) heights.Add(z);
             }
             if (heights.Count == 0) return false;
 
@@ -391,10 +460,12 @@ namespace CodeWalker.LocalApi
             return r > 0 ? "right side" : "left side";
         }
 
-        // Checks one placed prop against the other props, the world's collision geometry and the ground.
-        // Must not be called on the UI thread.
-        JObject ValidateProp(int id)
+        // Checks one placed prop against the other props, the world's collision geometry and the ground, waiting
+        // for collision to stream in within `wait` (a budget of its own when omitted). Must not be called on the
+        // UI thread.
+        JObject ValidateProp(int id, StreamWait wait = null)
         {
+            wait = wait ?? new StreamWait();
             var issues = new JArray();
             var cam = default(CameraFrame);
             var box = default(EntityBox);
@@ -438,7 +509,7 @@ namespace CodeWalker.LocalApi
             var groundHeights = new List<float>();
             foreach (var corner in box.BottomCorners())
             {
-                if (TrySnapToGround(corner.X, corner.Y, corner.Z + 3f, null, out float groundZ))
+                if (TrySnapToGround(corner.X, corner.Y, corner.Z + 3f, null, out float groundZ, wait))
                 {
                     gaps.Add(corner.Z - groundZ);
                     groundHeights.Add(groundZ);
@@ -485,7 +556,6 @@ namespace CodeWalker.LocalApi
                 var spheres = box.InteriorSpheres(floorClearance, 48, out float radius);
                 int hits = 0;
                 Vector3 hitOffset = Vector3.Zero;
-                var sphereWait = System.Diagnostics.Stopwatch.StartNew();
                 while (true)
                 {
                     hits = 0;
@@ -493,18 +563,28 @@ namespace CodeWalker.LocalApi
                     bool complete = OnUiThread(() =>
                     {
                         bool allLoaded = true;
-                        foreach (var sphere in spheres)
+                        // One hold of the render lock for all spheres: taken per sphere, each test could wait
+                        // for a frame to finish, and frames are slow while an area streams in.
+                        lock (worldForm.RenderSyncRoot)
                         {
-                            var hit = worldForm.SphereIntersect(sphere);
-                            if (!hit.TestComplete) allLoaded = false;
-                            if (!hit.Hit) continue;
-                            hits++;
-                            hitOffset += sphere.Center - box.Center;
+                            foreach (var sphere in spheres)
+                            {
+                                var hit = worldForm.SphereIntersect(sphere);
+                                if (!hit.TestComplete) allLoaded = false;
+                                if (!hit.Hit) continue;
+                                hits++;
+                                hitOffset += sphere.Center - box.Center;
+                            }
                         }
                         return allLoaded;
                     });
                     worldChecked = complete;
-                    if (complete || sphereWait.ElapsedMilliseconds >= StreamingTimeoutMs) break;
+                    if (complete) break;
+                    if (wait.Expired)
+                    {
+                        wait.TimedOut++;
+                        break;
+                    }
                     Thread.Sleep(100);
                 }
                 if (hits > 0)
@@ -542,10 +622,14 @@ namespace CodeWalker.LocalApi
                 ? ids.ToList()
                 : OnUiThread(() => ProjectEntities().Select(GetEntityId).ToList());
 
+            var total = System.Diagnostics.Stopwatch.StartNew();
+            // One budget for the whole check: per prop, a map in an unloaded area would take minutes and outlast
+            // the editor's timeout. Props checked after it ran out say the area wasn't fully loaded.
+            var wait = new StreamWait();
             var problems = new JArray();
             foreach (int id in targets)
             {
-                var validation = ValidateProp(id);
+                var validation = ValidateProp(id, wait);
                 if (validation["ok"]?.ToObject<bool>() == true) continue;
                 problems.Add(new JObject
                 {
@@ -554,7 +638,22 @@ namespace CodeWalker.LocalApi
                     ["validation"] = validation,
                 });
             }
-            return new JObject { ["success"] = true, ["checked"] = targets.Count, ["problems"] = problems };
+            return new JObject
+            {
+                ["success"] = true,
+                ["checked"] = targets.Count,
+                ["problems"] = problems,
+                ["timing"] = new JObject { ["totalMs"] = total.ElapsedMilliseconds, ["uiMs"] = uiWaitMs, ["validation"] = wait.Stop().Report() },
+            };
+        }
+
+        // Where a placement or move spent its time, for the host's log (the host strips it before the agent sees it).
+        static JObject Timing(System.Diagnostics.Stopwatch total, StreamWait ground, StreamWait validation)
+        {
+            var timing = new JObject { ["totalMs"] = total.ElapsedMilliseconds, ["uiMs"] = uiWaitMs };
+            if (ground != null) timing["ground"] = ground.Stop().Report();
+            if (validation != null) timing["validation"] = validation.Stop().Report();
+            return timing;
         }
 
         // ---------- entity ids and info ----------
@@ -651,6 +750,15 @@ namespace CodeWalker.LocalApi
             hiddenIds.Clear();
             lastValidationOk.Clear(); // ids get reused by the next map's props
             PublishHidden();
+            userSelection.Clear();
+            marker = null;
+            markArmed = false;
+            markPending = false;
+            markError = null;
+            worldForm.SetHostMarker(null);
+            RefreshHostYmaps();
+            mapGeneration++;
+            contextVersion++;
         }
 
         // UI thread only.
@@ -808,16 +916,20 @@ namespace CodeWalker.LocalApi
 
             string group = Group(req);
             int? faceId = req["face_id"]?.ToObject<int?>();
+            // Measure forward/right from the spot the user marked instead of from the camera (same directions).
+            bool atMarker = req["at_marker"]?.ToObject<bool?>() ?? false;
 
             if (string.IsNullOrWhiteSpace(model)) return Fail("model is required");
             model = model.ToLowerInvariant();
             uint hash = JenkHash.GenHash(model);
+            var total = System.Diagnostics.Stopwatch.StartNew();
 
             // Phase 1 (UI thread): validate and compute the target from the camera.
             string error = null;
             Archetype arch = null;
             var cam = default(CameraFrame);
             Vector3? faceTarget = null;
+            Vector3 origin = Vector3.Zero;
             OnUiThread(() =>
             {
                 if (!worldForm.IsWorldLoaded) { error = "The world is still loading"; return 0; }
@@ -829,20 +941,24 @@ namespace CodeWalker.LocalApi
                     if (faceEntity == null) { error = $"No prop with id {faceId.Value} to face"; return 0; }
                     faceTarget = faceEntity.Position;
                 }
+                if (atMarker && !marker.HasValue) { error = NoMarkerError; return 0; }
                 cam = GetCameraFrame();
+                origin = atMarker ? marker.Value : cam.Position;
                 return 0;
             });
             if (error != null) return Fail(error);
 
-            Vector3 target = cam.Position + cam.Forward * forward + cam.Right * right;
+            Vector3 target = origin + cam.Forward * forward + cam.Right * right;
 
             // Phase 2 (this worker thread): ground snap. The prop's origin is often not at its base
             // (prop_skid_tent_01's bottom is 0.61 m below it), so rest the bounding box bottom on the ground.
             float placeYaw = faceTarget.HasValue
                 ? YawForFront(YawToward(target, faceTarget.Value))
                 : YawFromRelativeHeading(cam, headingDeg);
-            bool grounded = TryFindSupport(target, placeYaw, arch, Vector3.One, cam.Position.Z, null, out float groundZ);
-            Vector3 pos = new Vector3(target.X, target.Y, grounded ? groundZ - arch.BBMin.Z + up : cam.Position.Z + up);
+            var groundWait = new StreamWait();
+            bool grounded = TryFindSupport(target, placeYaw, arch, Vector3.One, origin.Z, null, out float groundZ, groundWait);
+            groundWait.Stop();
+            Vector3 pos = new Vector3(target.X, target.Y, grounded ? groundZ - arch.BBMin.Z + up : origin.Z + up);
 
             // Phase 3 (UI thread): create the entity.
             var placed = OnUiThread(() =>
@@ -867,6 +983,8 @@ namespace CodeWalker.LocalApi
                 pf.AddEntityToProject();
                 pf.ShowEditYmapEntityPanel(false); // refresh the panel, it still shows the placeholder
                 pf.ProjectExplorer?.UpdateEntityTreeNode(ent); // tree was drawn before the model change
+                RefreshHostYmaps(); // the first placement may have created the ymap
+                ApplyUserSelection(); // the panel selected the new prop in the view
 
                 var info = EntityInfo(ent, cam);
                 Record(group, new PlacedOp { Id = GetEntityId(ent) });
@@ -876,13 +994,17 @@ namespace CodeWalker.LocalApi
             });
             if (placed["success"]?.ToObject<bool>() == true)
             {
-                placed["validation"] = ValidateProp(placed["id"].ToObject<int>());
+                var validationWait = new StreamWait();
+                placed["validation"] = ValidateProp(placed["id"].ToObject<int>(), validationWait);
+                placed["timing"] = Timing(total, groundWait, validationWait);
             }
             return placed;
         }
 
         // Moves a prop by a delta in the camera's frame and/or turns it. Without "up" the prop is
         // re-snapped to the ground at its new spot; with "up" its height changes by that amount.
+        // "to_marker": the move starts from the spot the user marked rather than from where the prop is, and the
+        // prop is always rested on the ground there ("up" then lifts it above the ground).
         JObject MoveProp(JObject req)
         {
             int id = req["id"]?.ToObject<int?>() ?? 0;
@@ -894,11 +1016,14 @@ namespace CodeWalker.LocalApi
             float east = req["east"]?.ToObject<float?>() ?? 0f;
             float? worldHeading = req["world_heading"]?.ToObject<float?>();
             int? faceId = req["face_id"]?.ToObject<int?>();
+            bool toMarker = req["to_marker"]?.ToObject<bool?>() ?? false;
             string group = Group(req);
+            var total = System.Diagnostics.Stopwatch.StartNew();
 
             YmapEntityDef ent = null;
             var cam = default(CameraFrame);
             Vector3? faceTarget = null;
+            Vector3 start = Vector3.Zero;
             string error = OnUiThread(() =>
             {
                 ent = ResolveEntity(id);
@@ -909,19 +1034,22 @@ namespace CodeWalker.LocalApi
                     if (target == null) return $"No prop with id {faceId.Value} to face";
                     faceTarget = target.Position;
                 }
+                if (toMarker && !marker.HasValue) return NoMarkerError;
                 cam = GetCameraFrame();
+                start = toMarker ? marker.Value : ent.Position;
                 return null;
             });
             if (error != null) return Fail(error);
 
-            Vector3 pos = OnUiThread(() => ent.Position) + cam.Forward * forward + cam.Right * right + new Vector3(east, north, 0);
+            Vector3 pos = start + cam.Forward * forward + cam.Right * right + new Vector3(east, north, 0);
             bool orientationChange = turnDeg != 0 || worldHeading.HasValue || faceTarget.HasValue;
             bool grounded = true;
-            if (up.HasValue)
+            StreamWait groundWait = null;
+            if (up.HasValue && !toMarker)
             {
                 pos.Z += up.Value;
             }
-            else if (forward != 0 || right != 0 || north != 0 || east != 0 || orientationChange)
+            else if (toMarker || forward != 0 || right != 0 || north != 0 || east != 0 || orientationChange)
             {
                 Archetype moveArch = null;
                 Vector3 moveScale = Vector3.One;
@@ -931,8 +1059,12 @@ namespace CodeWalker.LocalApi
                     moveScale = ent.Scale;
                     return TargetYaw(ent, pos, worldHeading, faceTarget, turnDeg);
                 });
-                grounded = TryFindSupport(pos, newYaw, moveArch, moveScale, Math.Max(cam.Position.Z, pos.Z), ent, out float groundZ);
+                groundWait = new StreamWait();
+                float referenceZ = toMarker ? start.Z : Math.Max(cam.Position.Z, pos.Z);
+                grounded = TryFindSupport(pos, newYaw, moveArch, moveScale, referenceZ, ent, out float groundZ, groundWait);
+                groundWait.Stop();
                 if (grounded) pos.Z = groundZ - (moveArch?.BBMin.Z ?? 0f) * moveScale.Z;
+                if (toMarker) pos.Z += up ?? 0f;
             }
 
             var moved = OnUiThread(() =>
@@ -962,7 +1094,9 @@ namespace CodeWalker.LocalApi
             });
             if (moved["success"]?.ToObject<bool>() == true)
             {
-                moved["validation"] = ValidateProp(id);
+                var validationWait = new StreamWait();
+                moved["validation"] = ValidateProp(id, validationWait);
+                moved["timing"] = Timing(total, groundWait, validationWait);
             }
             return moved;
         }
@@ -996,6 +1130,7 @@ namespace CodeWalker.LocalApi
                 idsByEntity.Remove(ent);
                 Record(group, new DeletedOp { Id = id, Removed = ent, Ymap = ymap });
                 PublishHidden();
+                ApplyUserSelection();
                 return new JObject { ["success"] = true, ["id"] = id };
             });
         }
@@ -1079,6 +1214,7 @@ namespace CodeWalker.LocalApi
                 }
             }
             PublishHidden();
+            ApplyUserSelection();
             return inverse;
         }
 
@@ -1132,6 +1268,214 @@ namespace CodeWalker.LocalApi
                 }
                 PublishHidden();
                 return new JObject { ["success"] = true, ["changed"] = changed };
+            });
+        }
+
+        // ---------- what the user points at: selection and marked spot ----------
+
+        const string NoMarkerError = "No spot is marked. The user marks one with \"Mark spot\" above the 3D view; until then, place relative to the camera.";
+
+        // UI thread only.
+        void RefreshHostYmaps()
+        {
+            var ymaps = worldForm.ProjectForm?.CurrentProjectFile?.YmapFiles;
+            hostYmaps = ymaps == null ? new YmapFile[0] : ymaps.Where(y => y != null).ToArray();
+        }
+
+        // Whether an entity belongs to the map being edited. Called by the render thread for every drawable under
+        // the mouse, so it only reads the snapshot.
+        public bool IsHostEntity(YmapEntityDef ent)
+        {
+            var ymap = ent?.Ymap;
+            return ymap != null && Array.IndexOf(hostYmaps, ymap) >= 0;
+        }
+
+        public bool MarkArmed => markArmed;
+
+        // Shows the user's selection in the view (CodeWalker's highlight), dropping props that no longer exist.
+        // UI thread only.
+        void ApplyUserSelection()
+        {
+            var ents = new List<YmapEntityDef>();
+            int before = userSelection.Count;
+            userSelection.RemoveAll(id => ResolveEntity(id) == null);
+            if (userSelection.Count != before) contextVersion++;
+            foreach (int id in userSelection) ents.Add(ResolveEntity(id));
+
+            // notifyProject: false keeps the hidden project window, and with it the ymap edits go to, out of it.
+            if (ents.Count == 0)
+            {
+                worldForm.SelectItem(null, false, false, false);
+            }
+            else if (ents.Count == 1)
+            {
+                worldForm.SelectItem(MapSelection.FromProjectObject(worldForm, ents[0]), false, false, false);
+            }
+            else
+            {
+                worldForm.SelectMulti(ents.Select(e => MapSelection.FromProjectObject(worldForm, e)).ToArray(), false, false);
+            }
+        }
+
+        // A click in the embedded view (no drag). Marks the spot when armed, otherwise selects the clicked prop of
+        // the map (`hit`, null for anything else); `add` (Ctrl) adds or removes it instead. `cursorRay` runs from
+        // the eye through the cursor, in world space. UI thread only.
+        public void OnViewClicked(YmapEntityDef hit, Ray cursorRay, bool mapView, bool add)
+        {
+            if (markArmed)
+            {
+                markArmed = false;
+                markPending = true;
+                markError = null;
+                contextVersion++;
+                int generation = mapGeneration;
+                // Collision only streams in once something asks for it, so the first ray into an area usually
+                // misses: retry on a worker thread for a few seconds, like ground snapping does.
+                Task.Run(() =>
+                {
+                    var wait = new StreamWait(8000);
+                    Vector3? spot = null;
+                    int completeMisses = 0;
+                    while (true)
+                    {
+                        var result = OnUiThread(() => worldForm.Raycast(cursorRay));
+                        if (result.Hit)
+                        {
+                            spot = result.Position;
+                            break;
+                        }
+                        // A complete miss can be a false negative right after the camera moved (see TrySnapToGround).
+                        if ((result.TestComplete && ++completeMisses >= 8) || wait.Expired) break;
+                        Thread.Sleep(100);
+                    }
+                    // The 2D map's ray starts far above the world; straight down from there is the same spot.
+                    if (!spot.HasValue && mapView && TrySnapToGround(cursorRay.Position.X, cursorRay.Position.Y, 1500f, null, out float z))
+                    {
+                        spot = new Vector3(cursorRay.Position.X, cursorRay.Position.Y, z);
+                    }
+                    OnUiThread(() =>
+                    {
+                        if (generation != mapGeneration) return 0;
+                        if (spot.HasValue) PlaceMarker(spot.Value);
+                        else FailMarker();
+                        return 0;
+                    });
+                });
+                return;
+            }
+
+            int? id = hit != null && IsHostEntity(hit) ? GetEntityId(hit) : (int?)null;
+            if (add)
+            {
+                if (!id.HasValue) return;
+                if (!userSelection.Remove(id.Value)) userSelection.Add(id.Value);
+            }
+            else
+            {
+                if (!id.HasValue && userSelection.Count == 0) return;
+                userSelection.Clear();
+                if (id.HasValue) userSelection.Add(id.Value);
+            }
+            contextVersion++;
+            ApplyUserSelection();
+        }
+
+        void PlaceMarker(Vector3 position)
+        {
+            marker = position;
+            markPending = false;
+            markError = null;
+            worldForm.SetHostMarker(position);
+            contextVersion++;
+        }
+
+        void FailMarker()
+        {
+            markPending = false;
+            markError = "No ground under the cursor there, or that area hasn't loaded yet. Try again.";
+            contextVersion++;
+        }
+
+        // The selection and the marked spot, for the host's composer. Body: { "since": version } answers just
+        // { version, unchanged: true } when nothing changed, without touching the UI thread (it is polled often).
+        JObject GetContext(JObject req)
+        {
+            int? since = req["since"]?.ToObject<int?>();
+            int version = contextVersion;
+            if (since.HasValue && since.Value == version) return new JObject { ["version"] = version, ["unchanged"] = true };
+            return OnUiThread(ContextState);
+        }
+
+        // UI thread only.
+        JObject ContextState()
+        {
+            var cam = GetCameraFrame();
+            var selection = new JArray();
+            foreach (int id in userSelection)
+            {
+                var ent = ResolveEntity(id);
+                if (ent != null) selection.Add(EntityInfo(ent, cam));
+            }
+            JObject markerInfo = null;
+            if (marker.HasValue)
+            {
+                Vector3 offset = marker.Value - cam.Position;
+                markerInfo = new JObject
+                {
+                    ["position"] = Vec(marker.Value),
+                    ["distance"] = (float)Math.Round(Vector3.Distance(marker.Value, cam.Position), 1),
+                    // Where it is from the camera, in place_prop's terms.
+                    ["forward"] = Round2(Vector3.Dot(offset, cam.Forward)),
+                    ["right"] = Round2(Vector3.Dot(offset, cam.Right)),
+                };
+            }
+            return new JObject
+            {
+                ["success"] = true,
+                ["version"] = contextVersion,
+                ["selection"] = selection,
+                ["marker"] = markerInfo,
+                ["markArmed"] = markArmed,
+                ["markPending"] = markPending,
+                ["markError"] = markError,
+            };
+        }
+
+        // Sets the selection from the host (its props list). Body: { "ids": [..] }, [] clears it.
+        JObject SetSelection(JObject req)
+        {
+            var ids = req["ids"]?.ToObject<int[]>() ?? new int[0];
+            return OnUiThread(() =>
+            {
+                userSelection.Clear();
+                userSelection.AddRange(ids.Distinct().Where(id => ResolveEntity(id) != null));
+                contextVersion++;
+                ApplyUserSelection();
+                return ContextState();
+            });
+        }
+
+        // Body: { "arm": true } marks the spot of the next click in the view, { "arm": false } cancels that,
+        // { "clear": true } removes the marked spot.
+        JObject SetMarker(JObject req)
+        {
+            bool? arm = req["arm"]?.ToObject<bool?>();
+            bool clear = req["clear"]?.ToObject<bool?>() ?? false;
+            return OnUiThread(() =>
+            {
+                if (arm.HasValue)
+                {
+                    markArmed = arm.Value;
+                    markError = null;
+                }
+                if (clear)
+                {
+                    marker = null;
+                    markError = null;
+                    worldForm.SetHostMarker(null);
+                }
+                contextVersion++;
+                return ContextState();
             });
         }
 
@@ -1502,6 +1846,8 @@ namespace CodeWalker.LocalApi
                     });
                 }
                 saved = worldForm.SaveCameraState();
+                // The selection, hover box and marked spot are the user's; they'd only clutter what the agent sees.
+                worldForm.HideHostOverlays = true;
                 return null;
             });
             if (error != null) return Fail(error);
@@ -1555,7 +1901,12 @@ namespace CodeWalker.LocalApi
             }
             finally
             {
-                OnUiThread(() => { worldForm.RestoreCameraState(saved); return 0; });
+                OnUiThread(() =>
+                {
+                    worldForm.RestoreCameraState(saved);
+                    worldForm.HideHostOverlays = false;
+                    return 0;
+                });
             }
 
             return new JObject
@@ -1640,6 +1991,8 @@ namespace CodeWalker.LocalApi
                 ymap.HasChanged = false;
                 pf.CurrentProjectFile.HasChanged = false;
                 pf.CurrentYmapFile = ymap;
+                RefreshHostYmaps();
+                worldForm.SelectItem(null, false, false, false); // nothing of the old map stays selected
 
                 var entities = ymap.AllEntities ?? new YmapEntityDef[0];
                 // Hand out ids now, in file order, so ids given to /validate or /look right after opening
