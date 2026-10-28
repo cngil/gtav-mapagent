@@ -6,7 +6,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron"
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { beginUserRequest, EditorSession, reviewCostUsd, type AgentHost } from "./agent.js";
 import { APP_ID, APP_NAME } from "./app-info.js";
-import { codewalker, CodeWalkerError, setHistoryGroup, setTimingLog, type ViewContext } from "./codewalker.js";
+import { API_TOKEN, codewalker, CodeWalkerError, setHistoryGroup, setTimingLog, type ViewContext } from "./codewalker.js";
 import { EXPORT_TARGET_INFO, EXPORT_TARGETS, exportMap, type ExportTarget } from "./export.js";
 import { layout } from "./layout.js";
 import type { UiEvent, ViewerStatus } from "./events.js";
@@ -20,6 +20,15 @@ import { messageEvents, pointing, withEditorContext } from "./transcript.js";
 app.setName(APP_NAME);
 app.setPath("userData", path.join(app.getPath("appData"), APP_ID));
 if (process.platform === "win32") app.setAppUserModelId(APP_ID);
+
+// One editor at a time: CodeWalker's API port and the 3D scene can't be shared. A second start brings the
+// running editor to the front instead.
+if (!app.requestSingleInstanceLock()) app.exit(0);
+app.on("second-instance", () => {
+  if (!window) return;
+  if (window.isMinimized()) window.restore();
+  window.focus();
+});
 
 const editorDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoDir = path.resolve(editorDir, "..");
@@ -64,6 +73,13 @@ function setViewer(next: ViewerStatus) {
 
 function log(message: string) {
   console.log(`[${new Date().toISOString()}] ${message}`);
+}
+
+// Whether target is the folder root or something in it. A plain prefix test would also let "maps-other" through.
+function isInside(root: string, target: unknown) {
+  if (typeof target !== "string" || !target) return false;
+  const relative = path.relative(path.resolve(root), path.resolve(target));
+  return !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -126,7 +142,12 @@ async function launchViewer(win: BrowserWindow) {
 
   const handle = nativeHandle(win);
   log(`spawning ${codewalkerExe} embed=${handle}`);
-  const child = spawn(codewalkerExe, [`embed=${handle}`], { cwd: path.dirname(codewalkerExe), stdio: "ignore" });
+  // The token makes CodeWalker refuse API calls from anything but this editor (see LocalApiServer.RefuseReason).
+  const child = spawn(codewalkerExe, [`embed=${handle}`], {
+    cwd: path.dirname(codewalkerExe),
+    stdio: "ignore",
+    env: { ...process.env, MAPAGENT_API_TOKEN: API_TOKEN },
+  });
   codewalkerProcess = child;
   child.on("error", (err) => log(`spawn error: ${err.message}`));
   child.on("exit", (code) => {
@@ -329,7 +350,7 @@ ipcMain.handle("map:export", async (_event, name: string, target: ExportTarget) 
 
 // Opens an export's folder, or shows an exported file in its folder.
 ipcMain.handle("shell:show-folder", (_event, target: string) => {
-  if (!path.resolve(target).startsWith(path.resolve(mapsDir))) return;
+  if (!isInside(mapsDir, target)) return;
   if (fs.statSync(target, { throwIfNoEntry: false })?.isDirectory()) return shell.openPath(target);
   shell.showItemInFolder(target);
 });
@@ -494,6 +515,7 @@ function isSettled(id: string | null) {
 }
 
 ipcMain.handle("agent:send", async (_event, text: string) => {
+  if (typeof text !== "string" || !text.trim()) throw new Error("The message is empty.");
   if (busy) throw new Error("The agent is still answering.");
   if (!project) throw new Error("No project is open.");
   if (isSettled(threadId)) throw new Error("This chat is settled. Unsettle it to continue, or start a new chat.");
@@ -532,9 +554,16 @@ function assertIdle() {
 }
 
 function requireProject(id: string) {
-  const p = projects.get(id);
+  const p = typeof id === "string" ? projects.get(id) : undefined;
   if (!p) throw new Error("This project no longer exists.");
   return p;
+}
+
+// Chat ids name the SDK's session files, so only well-formed ids of the project's own chats get through to it.
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function requireThread(p: ProjectInfo, id: string) {
+  if (typeof id !== "string" || !SESSION_ID.test(id) || !projects.threads(p).has(id)) throw new Error("This chat no longer exists.");
+  return id;
 }
 
 // Makes a chat the open one (null = a new chat), continuing its conversation when a message is sent.
@@ -576,7 +605,7 @@ async function openProject(id: string, thread?: string | null) {
   }
   if (thread !== undefined && thread !== threadId) {
     assertIdle();
-    if (thread && !(await chats.exists(thread))) throw new Error("This chat no longer exists.");
+    if (thread && (!SESSION_ID.test(thread) || !(await chats.exists(thread)))) throw new Error("This chat no longer exists.");
     selectThread(thread);
   }
 }
@@ -688,21 +717,29 @@ ipcMain.handle("threads:open", async (_event, projectId: string, id: string) => 
   return openState();
 });
 
-ipcMain.handle("threads:rename", (_event, id: string, title: string) => chats.rename(id, title));
+ipcMain.handle("threads:rename", (_event, id: string, title: string) => {
+  const p = typeof id === "string" && SESSION_ID.test(id) ? projects.projectOf(id) : undefined;
+  if (!p) throw new Error("This chat no longer exists.");
+  return chats.rename(id, String(title));
+});
 
-ipcMain.handle("threads:pin", (_event, projectId: string, id: string, pinned: boolean) =>
-  projects.threads(requireProject(projectId)).update(id, { pinned }),
-);
+ipcMain.handle("threads:pin", (_event, projectId: string, id: string, pinned: boolean) => {
+  const p = requireProject(projectId);
+  projects.threads(p).update(requireThread(p, id), { pinned: !!pinned });
+});
 
 // Settled chats are read-only until unsettled.
 ipcMain.handle("threads:settle", (_event, projectId: string, id: string, settled: boolean) => {
+  const p = requireProject(projectId);
+  requireThread(p, id);
   if (settled && id === threadId) assertIdle();
-  projects.threads(requireProject(projectId)).update(id, { settled });
+  projects.threads(p).update(id, { settled: !!settled });
 });
 
 // Returns whether the chat was deleted (the user can cancel).
 ipcMain.handle("threads:delete", async (_event, projectId: string, id: string, title: string) => {
   const p = requireProject(projectId);
+  requireThread(p, id);
   if (id === threadId) assertIdle();
   if (!window) return false;
   const { response } = await dialog.showMessageBox(window, {
@@ -710,7 +747,7 @@ ipcMain.handle("threads:delete", async (_event, projectId: string, id: string, t
     buttons: ["Delete", "Cancel"],
     defaultId: 1,
     cancelId: 1,
-    message: `Delete "${title}"?`,
+    message: `Delete "${String(title).slice(0, 200)}"?`,
     detail: "The conversation is removed for good. Props it placed stay in the map.",
   });
   if (response !== 0) return false;

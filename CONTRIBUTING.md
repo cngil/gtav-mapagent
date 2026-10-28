@@ -55,7 +55,7 @@ npm run build       # type-check and compile editor/src to editor/dist
 
 ## Local API
 
-CodeWalker listens on `127.0.0.1:35873` only. Endpoints take and return JSON over `POST`:
+CodeWalker listens on `127.0.0.1:35873` only. Endpoints take and return JSON over `POST` (`Content-Type: application/json`). Requests that carry an `Origin` header (web pages) are refused. The editor starts CodeWalker with a random `MAPAGENT_API_TOKEN` and sends it as `X-MapAgent-Token`; CodeWalker then refuses every call without it except `/status`. To drive a CodeWalker you started yourself, set `MAPAGENT_API_TOKEN` for both, or leave it unset for both. Bodies are limited to 1 MB.
 
 - Scene: `/status`, `/search_props`, `/place_entity`, `/move_prop`, `/delete_prop`, `/list_props`, `/set_visibility`
 - Checks and sight: `/validate`, `/look`

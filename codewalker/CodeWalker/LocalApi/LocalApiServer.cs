@@ -29,6 +29,15 @@ namespace CodeWalker.LocalApi
         CancellationTokenSource cts;
         const int Port = 35873;
 
+        // Any local process and any web page open in a browser can reach 127.0.0.1, and the API reads and writes
+        // files. The host editor starts CodeWalker with a random token in this environment variable and sends it
+        // with every request; when it is set, requests without it are refused. /status stays open so a new editor
+        // can tell whether a previous CodeWalker still holds the port.
+        const string TokenVariable = "MAPAGENT_API_TOKEN";
+        const string TokenHeader = "X-MapAgent-Token";
+        readonly string apiToken = Environment.GetEnvironmentVariable(TokenVariable);
+        const int MaxRequestChars = 1 << 20; // the largest real request (a long id list) is a few kB
+
         // Stable ids for entities. A ymap's entity indexes shift when entities are removed, so they
         // can't be handed out as identifiers. Only touched on the UI thread.
         readonly Dictionary<int, YmapEntityDef> entitiesById = new Dictionary<int, YmapEntityDef>();
@@ -117,16 +126,25 @@ namespace CodeWalker.LocalApi
             uiWaitMs = 0;
             try
             {
-                JObject requestBody = new JObject();
-                if (ctx.Request.HttpMethod == "POST" && ctx.Request.HasEntityBody)
+                string refused = RefuseReason(ctx.Request, out statusCode);
+                if (refused != null)
                 {
-                    using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
+                    WriteJson(ctx.Response, statusCode, new JObject { ["success"] = false, ["error"] = refused });
+                    return;
+                }
+
+                JObject requestBody = new JObject();
+                if (ctx.Request.HasEntityBody)
+                {
+                    string text = ReadBody(ctx.Request);
+                    if (text == null)
                     {
-                        var text = reader.ReadToEnd();
-                        if (!string.IsNullOrWhiteSpace(text))
-                        {
-                            requestBody = JObject.Parse(text);
-                        }
+                        WriteJson(ctx.Response, 413, new JObject { ["success"] = false, ["error"] = "request body too large" });
+                        return;
+                    }
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        requestBody = JObject.Parse(text);
                     }
                 }
 
@@ -174,6 +192,63 @@ namespace CodeWalker.LocalApi
             WriteJson(ctx.Response, statusCode, responseBody);
         }
 
+        // Why a request is not served, or null. Browsers always send Origin with a cross-site POST and must send a
+        // preflight for application/json, so refusing both keeps web pages out even without a token.
+        string RefuseReason(HttpListenerRequest request, out int statusCode)
+        {
+            statusCode = 200;
+            if (request.HttpMethod != "POST")
+            {
+                statusCode = 405;
+                return "only POST is accepted";
+            }
+            if (!string.IsNullOrEmpty(request.Headers["Origin"]))
+            {
+                statusCode = 403;
+                return "requests from web pages are not accepted";
+            }
+            if (request.HasEntityBody && (request.ContentType == null ||
+                !request.ContentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase)))
+            {
+                statusCode = 415;
+                return "the body must be application/json";
+            }
+            if (!string.IsNullOrEmpty(apiToken) && request.Url.AbsolutePath != "/status" &&
+                !TokensEqual(request.Headers[TokenHeader], apiToken))
+            {
+                statusCode = 401;
+                return "missing or wrong API token";
+            }
+            return null;
+        }
+
+        // Constant-time, so the token can't be guessed a character at a time from response times.
+        static bool TokensEqual(string given, string expected)
+        {
+            if (given == null || given.Length != expected.Length) return false;
+            int diff = 0;
+            for (int i = 0; i < expected.Length; i++) diff |= given[i] ^ expected[i];
+            return diff == 0;
+        }
+
+        // The body as text, or null if it is larger than MaxRequestChars.
+        static string ReadBody(HttpListenerRequest request)
+        {
+            if (request.ContentLength64 > MaxRequestChars * 4L) return null;
+            using (var reader = new StreamReader(request.InputStream, Encoding.UTF8))
+            {
+                var text = new StringBuilder();
+                var buffer = new char[4096];
+                int read;
+                while ((read = reader.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    text.Append(buffer, 0, read);
+                    if (text.Length > MaxRequestChars) return null;
+                }
+                return text.ToString();
+            }
+        }
+
         static void WriteJson(HttpListenerResponse response, int statusCode, JObject body)
         {
             var bytes = Encoding.UTF8.GetBytes(body.ToString(Formatting.None));
@@ -181,7 +256,7 @@ namespace CodeWalker.LocalApi
             {
                 response.StatusCode = statusCode;
                 response.ContentType = "application/json";
-                response.Headers.Add("Access-Control-Allow-Origin", "*");
+                response.Headers.Add("X-Content-Type-Options", "nosniff");
                 response.ContentLength64 = bytes.Length;
                 using (var os = response.OutputStream)
                 {

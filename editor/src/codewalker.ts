@@ -1,8 +1,14 @@
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 
 // Client for the local HTTP API added to the CodeWalker fork (CodeWalker/LocalApi/LocalApiServer.cs).
 
 const BASE_URL = process.env.CODEWALKER_API ?? "http://127.0.0.1:35873";
+
+// Sent with every call. The editor starts CodeWalker with the same token, and CodeWalker then refuses calls
+// without it, so other programs and web pages can't drive the map or write files through it. Set
+// MAPAGENT_API_TOKEN yourself to talk to a CodeWalker you started with that variable.
+export const API_TOKEN = process.env.MAPAGENT_API_TOKEN || randomBytes(32).toString("hex");
 
 export type Vec3 = [number, number, number];
 
@@ -172,7 +178,7 @@ async function post<T>(path: string, body: object = {}, timeoutMs = DEFAULT_TIME
   try {
     res = await fetch(BASE_URL + path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-MapAgent-Token": API_TOKEN },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -183,7 +189,13 @@ async function post<T>(path: string, body: object = {}, timeoutMs = DEFAULT_TIME
     }
     throw new Error(`CodeWalker is not reachable at ${BASE_URL}. Is the CodeWalker fork running?`);
   }
-  const json = (await res.json()) as T & { success?: boolean; error?: string; timing?: unknown };
+  let json: T & { success?: boolean; error?: string; timing?: unknown };
+  try {
+    json = await res.json();
+  } catch {
+    logTiming(path, Date.now() - started, "failed", null);
+    throw new CodeWalkerError(`CodeWalker API ${path} failed with HTTP ${res.status}`);
+  }
   logTiming(path, Date.now() - started, res.ok && json.success !== false ? "ok" : "failed", json.timing);
   if (!res.ok || json.success === false) {
     throw new CodeWalkerError(json.error ?? `CodeWalker API ${path} failed with HTTP ${res.status}`, json);

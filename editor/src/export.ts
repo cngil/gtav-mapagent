@@ -36,7 +36,9 @@ export async function exportMap(source: ExportSource, name: string, target: Expo
   checkName(name);
   if (!EXPORT_TARGETS.includes(target)) throw new Error(`Unknown export target '${target}'`);
   if (!fs.existsSync(source.ymapPath)) throw new Error("The map is empty; place some props first.");
-  const entityCount = (await codewalker.listProps()).length;
+  // One list for the count and the script targets: listing walks the whole map in CodeWalker.
+  const placed = await codewalker.listProps();
+  const entityCount = placed.length;
   const out = path.join(source.dir, "exports", target);
   const ymapName = path.basename(source.ymapPath);
   const result = (written: string, nextSteps: string): ExportResult => ({ target, path: written, entityCount, nextSteps });
@@ -68,21 +70,21 @@ export async function exportMap(source: ExportSource, name: string, target: Expo
     case "ragemp": {
       const dir = path.join(out, name);
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, "index.js"), rageMpScript(name, await exportedProps()));
+      fs.writeFileSync(path.join(dir, "index.js"), rageMpScript(name, exportedProps(placed)));
       return result(dir, "Copy the folder into your server's packages/. The props spawn in dimension 0 when the server starts.");
     }
 
     case "menyoo": {
       fs.mkdirSync(out, { recursive: true });
       const file = path.join(out, `${name}.xml`);
-      fs.writeFileSync(file, menyooXml(await exportedProps()));
+      fs.writeFileSync(file, menyooXml(exportedProps(placed)));
       return result(file, "Copy the file to Grand Theft Auto V\\MenyooStuff\\Spooner and load it from Object Spooner → Manage Saved Files.");
     }
 
     case "json": {
       fs.mkdirSync(out, { recursive: true });
       const file = path.join(out, `${name}.json`);
-      const props = await exportedProps();
+      const props = exportedProps(placed);
       const doc = {
         generator: APP_NAME,
         name,
@@ -124,8 +126,7 @@ interface ExportedProp {
 }
 
 // Hidden props are included: hiding is an editor-only view setting.
-async function exportedProps(): Promise<ExportedProp[]> {
-  const props = await codewalker.listProps();
+function exportedProps(props: PlacedProp[]): ExportedProp[] {
   return props.map((p) => {
     if (!p.rotation) throw new Error("This CodeWalker build doesn't report prop rotations; close the editor and rebuild with npm run start:all.");
     const { model, hash } = modelOf(p);

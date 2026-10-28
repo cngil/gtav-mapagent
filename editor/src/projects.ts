@@ -73,9 +73,25 @@ function readJson<T>(file: string): T | null {
   }
 }
 
-function writeJson(file: string, value: unknown) {
+// Writes a temporary file and renames it over the old one, so a crash or full disk mid-write leaves the
+// previous version instead of a cut-off file that would lose the project's chats or name.
+export function writeFileAtomic(file: string, text: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(value, null, 2));
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, text);
+  try {
+    fs.renameSync(temp, file);
+  } catch (err) {
+    // Windows refuses the rename while another program (a virus scanner, an editor) holds the file open.
+    fs.rmSync(temp, { force: true });
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") throw err;
+    fs.writeFileSync(file, text);
+  }
+}
+
+function writeJson(file: string, value: unknown) {
+  writeFileAtomic(file, JSON.stringify(value, null, 2));
 }
 
 // The chats of one project and what the SDK doesn't store about them.
@@ -84,11 +100,13 @@ export class ProjectThreads {
 
   constructor(private readonly file: string) {
     const raw = readJson<ThreadsFile>(file);
-    this.data = { version: 1, lastThreadId: raw?.lastThreadId, threads: raw?.threads ?? {} };
+    const threads = raw?.threads && typeof raw.threads === "object" && !Array.isArray(raw.threads) ? raw.threads : {};
+    this.data = { version: 1, lastThreadId: raw?.lastThreadId, threads };
   }
 
+  // Own keys only: "constructor" or "toString" are not chats.
   has(id: string) {
-    return id in this.data.threads;
+    return Object.hasOwn(this.data.threads, id);
   }
 
   ids() {
@@ -96,7 +114,7 @@ export class ProjectThreads {
   }
 
   meta(id: string): ThreadMeta {
-    return this.data.threads[id] ?? {};
+    return this.has(id) ? this.data.threads[id] : {};
   }
 
   add(id: string, meta: ThreadMeta = {}) {

@@ -141,6 +141,7 @@ Optional environment variables:
 |---|---|
 | `CODEWALKER_EXE` | `codewalker/CodeWalker/bin/Debug/net48/CodeWalker.exe` |
 | `CODEWALKER_API` | `http://127.0.0.1:35873` |
+| `MAPAGENT_API_TOKEN` | a new random token each start, shared only with the CodeWalker the editor starts |
 | `MAP_OUTPUT_DIR` | `maps/` in the repository |
 | `MAP_EDITOR_MODEL` | the model chosen in the app, else your account's default |
 

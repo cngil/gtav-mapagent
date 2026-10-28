@@ -1352,15 +1352,26 @@ window.editor.viewContext().then(showViewContext);
 
 // ---------- embedded 3D view ----------
 
-// CodeWalker's window is a native child window laid over #viewport, so it needs physical pixels.
+// CodeWalker's window is a native child window laid over #viewport, so it needs physical pixels. Each report
+// is a call into CodeWalker, so a window being dragged to a new size reports once per frame, and only changes.
+let boundsFrame = 0;
+let lastBounds = "";
 function reportViewportBounds() {
-  const rect = viewport.getBoundingClientRect();
-  const scale = window.devicePixelRatio;
-  window.editor.setViewportBounds({
-    x: Math.round(rect.left * scale),
-    y: Math.round(rect.top * scale),
-    width: Math.round(rect.width * scale),
-    height: Math.round(rect.height * scale),
+  if (boundsFrame) return;
+  boundsFrame = requestAnimationFrame(() => {
+    boundsFrame = 0;
+    const rect = viewport.getBoundingClientRect();
+    const scale = window.devicePixelRatio;
+    const bounds = {
+      x: Math.round(rect.left * scale),
+      y: Math.round(rect.top * scale),
+      width: Math.round(rect.width * scale),
+      height: Math.round(rect.height * scale),
+    };
+    const key = JSON.stringify(bounds);
+    if (key === lastBounds) return;
+    lastBounds = key;
+    window.editor.setViewportBounds(bounds);
   });
 }
 new ResizeObserver(reportViewportBounds).observe(viewport);
@@ -1456,8 +1467,14 @@ async function refreshState() {
   showCameraMode(status.cameraMode);
   propCount.textContent = String(props.length);
 
+  // Polled every few seconds: rebuild the list only when something it shows changed, so rows don't flicker
+  // and lose their hover state for nothing.
+  const treeKey = JSON.stringify([props, folders, [...collapsedFolders], [...selectedIds()]]);
+  if (treeKey === lastTreeKey) return;
+  lastTreeKey = treeKey;
   renderTree(props, folders);
 }
+let lastTreeKey = "";
 
 function eyeButton(hidden, title, onToggle) {
   const button = iconButton(hidden ? "eye-off" : "eye", hidden ? `Show ${title}` : `Hide ${title}`, () => {

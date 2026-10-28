@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { codewalker, type PlacedProp } from "./codewalker.js";
+import { writeFileAtomic } from "./projects.js";
 
 // Editor-only organisation of the map's props into named folders, plus hide/show. Nothing here is
 // written into the .ymap; it lives next to it as <map>.layout.json.
@@ -134,7 +135,7 @@ class SceneLayout {
       folders: this.listFolders().map((f) => ({ ...f, indices: byFolder.get(f.name) ?? [] })),
       hiddenIndices: props.filter((p) => p.hidden && p.index >= 0).map((p) => p.index),
     };
-    fs.writeFileSync(layoutPathFor(ymapPath), JSON.stringify(file, null, 2));
+    writeFileAtomic(layoutPathFor(ymapPath), JSON.stringify(file, null, 2));
     this.dirty = false;
   }
 
@@ -143,18 +144,30 @@ class SceneLayout {
     this.reset();
     const path = layoutPathFor(ymapPath);
     if (!fs.existsSync(path)) return;
-    const file = JSON.parse(fs.readFileSync(path, "utf8")) as LayoutFile;
+    let file: LayoutFile;
+    try {
+      file = JSON.parse(fs.readFileSync(path, "utf8"));
+    } catch {
+      // A damaged layout mustn't keep the map from opening (and autosaving). Keep it aside; the props
+      // come up without folders.
+      fs.copyFileSync(path, `${path}.damaged`);
+      return;
+    }
+    const isIndexList = (value: unknown): value is number[] => Array.isArray(value) && value.every(Number.isInteger);
+    const folders = (Array.isArray(file?.folders) ? file.folders : []).filter(
+      (f) => typeof f?.name === "string" && f.name.trim() && isIndexList(f.indices),
+    );
     const props = await codewalker.listProps();
     const idAt = new Map(props.map((p) => [p.index, p.id]));
     const toIds = (indices: number[]) => indices.map((i) => idAt.get(i)).filter((id): id is number => id !== undefined);
 
-    for (const folder of file.folders ?? []) {
+    for (const folder of folders) {
       this.folders.set(folder.name, { hidden: false });
       for (const id of toIds(folder.indices)) this.folderOfProp.set(id, folder.name);
     }
-    const hidden = toIds(file.hiddenIndices ?? []);
+    const hidden = toIds(isIndexList(file?.hiddenIndices) ? file.hiddenIndices : []);
     if (hidden.length) await codewalker.setVisibility(hidden, false);
-    for (const folder of file.folders ?? []) {
+    for (const folder of folders) {
       if (folder.hidden) this.folders.get(folder.name)!.hidden = true;
     }
   }

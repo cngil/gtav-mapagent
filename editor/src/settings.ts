@@ -2,6 +2,7 @@ import fs from "node:fs";
 import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 import { LOOK_VIEWS, type LookView } from "./codewalker.js";
 import { EXPORT_TARGETS, type ExportTarget } from "./export.js";
+import { writeFileAtomic } from "./projects.js";
 
 // Editor settings, stored in the app's userData folder. Everything is read at the moment it is used, so a
 // change applies to the next request (or immediately, for the camera) without restarting the conversation.
@@ -102,6 +103,7 @@ export function getSettings(): EditorSettings {
 
 // null clears an optional value back to its default.
 export function updateSettings(patch: SettingsPatch): EditorSettings {
+  if (!patch || typeof patch !== "object") return current;
   const merged: any = {
     ...current,
     critic: { ...current.critic, ...patch.critic },
@@ -112,6 +114,6 @@ export function updateSettings(patch: SettingsPatch): EditorSettings {
   if ("model" in patch) merged.model = patch.model;
   if ("effort" in patch) merged.effort = patch.effort;
   current = normalize(merged);
-  if (filePath) fs.writeFileSync(filePath, JSON.stringify(current, null, 2));
+  if (filePath) writeFileAtomic(filePath, JSON.stringify(current, null, 2));
   return current;
 }
